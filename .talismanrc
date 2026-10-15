@@ -4,11 +4,11 @@
 #   src/main.cpp                   "key" matches in QKeySequence shortcuts
 fileignoreconfig:
 - filename: README.md
-  checksum: 0e5a6798e7934d3cafa26172482e7cb7baaa0da26320d9da15d106c1977d40f9
+  checksum: 762cc88bbfc647aa987b51f8e685a03c5c831cb21fdec88bc17662b44af2576c
 - filename: tools/footprint.py
   checksum: 42f3fd1fca9fb0e6aea1886baf32da1887373e8dc20257e3af4a1e9ed7511d84
 - filename: src/test.cpp
   checksum: 0873bd05be90e8de4293a45092f1bf109f39f88028b2bfa160a65fe68272ed9f
 - filename: src/main.cpp
-  checksum: 4b5e14c02d992ba6d67a1d3280e7a38e5a7262a9fb0504196c89622570ae5ce6
+  checksum: 8a027e3c59f84e3fd4a21e43111ddddfee3a99897e0e7a1ca4640a1045391300
 version: "1.0"

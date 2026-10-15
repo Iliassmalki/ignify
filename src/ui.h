@@ -32,7 +32,8 @@ inline QPixmap rounded(const QPixmap &src, int size, qreal radius, qreal dpr) {
 }
 QPixmap tile(int size, qreal radius, qreal dpr, const QColor &bg, const QColor &fg = {}, const Glyph *glyph = nullptr,
              const QColor &bg2 = {});  // bg2: diagonal gradient bg -> bg2
-QPixmap spotifyLogo(int size, qreal dpr);  // attribution mark + window icon
+QPixmap spotifyLogo(int size, qreal dpr);  // attribution mark beside the name only
+QPixmap appIcon(int size, qreal dpr);      // ignify's own mark: a green flame on a dark tile
 
 // The cover's most vivid colour; tints the now-playing panel like Spotify's own view.
 QColor moodColor(const QPixmap &cover);

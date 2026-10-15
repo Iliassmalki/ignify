@@ -1139,7 +1139,7 @@ int main(int argc, char **argv) {
     app.setOrganizationName("ignify");
     app.setApplicationName("ignify");
     theme::apply(app);
-    app.setWindowIcon(QIcon(spotifyLogo(256, 1)));
+    app.setWindowIcon(QIcon(appIcon(256, 1)));
 
     QSettings settings;
     QDir().mkpath(QFileInfo(settings.fileName()).path());

@@ -332,6 +332,42 @@ QPixmap spotifyLogo(int size, qreal dpr) {
     return out;
 }
 
+// ignify's own mark, so Spotify's logo is only ever attribution (its terms forbid it as an app icon).
+QPixmap appIcon(int size, qreal dpr) {
+    int px = qRound(size * dpr);
+    QPixmap out(px, px);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.scale(px, px);
+    p.setPen(Qt::NoPen);
+    p.setBrush(theme::base);
+    p.drawRoundedRect(QRectF(0, 0, 1, 1), .22, .22);
+    QPainterPath flame;
+    flame.moveTo(.50, .12);
+    flame.cubicTo(.60, .30, .80, .40, .78, .62);
+    flame.cubicTo(.76, .80, .64, .90, .50, .90);
+    flame.cubicTo(.36, .90, .22, .80, .22, .62);
+    flame.cubicTo(.22, .48, .32, .40, .37, .30);
+    flame.cubicTo(.40, .40, .44, .45, .49, .47);
+    flame.cubicTo(.48, .35, .45, .24, .50, .12);
+    QLinearGradient fire(0, .12, 0, .90);
+    fire.setColorAt(0, theme::greenHover);
+    fire.setColorAt(1, theme::green);
+    p.setBrush(fire);
+    p.drawPath(flame);
+    QPainterPath core;  // the dark heart of the flame
+    core.moveTo(.50, .56);
+    core.cubicTo(.59, .65, .63, .72, .61, .78);
+    core.cubicTo(.59, .85, .41, .85, .39, .78);
+    core.cubicTo(.37, .71, .43, .64, .50, .56);
+    p.setBrush(theme::base);
+    p.drawPath(core);
+    p.end();
+    out.setDevicePixelRatio(dpr);
+    return out;
+}
+
 QColor moodColor(const QPixmap &cover) {
     // An 8x8 smooth downscale averages regions; the most vivid region beats the muddy global mean.
     QImage img = cover.toImage().scaled(8, 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);

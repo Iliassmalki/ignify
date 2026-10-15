@@ -142,8 +142,7 @@ cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=
 
 ## Branding
 
-ignify uses Spotify's colours, its Liked Songs gradient and the Spotify logo. The logo is
-drawn in vector by `spotifyLogo()` in `src/ui.cpp`. It appears beside the wordmark as
-"powered by Spotify" attribution, which Spotify's guidelines require, and it is also the
-window icon. That's fine for personal use. Before publishing, replace the window icon in
-`main()`: Spotify's developer terms don't allow its logo as a third-party app's own icon.
+ignify uses Spotify's colours and Liked Songs gradient. The Spotify logo, drawn in vector by
+`spotifyLogo()` in `src/ui.cpp`, appears only beside the wordmark as "powered by Spotify"
+attribution, which Spotify's guidelines require. The window icon is ignify's own mark, a green
+flame drawn by `appIcon()`.
