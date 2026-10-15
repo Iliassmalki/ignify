@@ -1,0 +1,420 @@
+#include "ui.h"
+#include <QApplication>
+#include <algorithm>
+#include <QNetworkDiskCache>
+#include <QNetworkReply>
+#include <QPainter>
+#include <QPainterPath>
+#include <QProxyStyle>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFileInfo>
+#include <QStyleFactory>
+
+namespace {
+// Clicking a slider's groove jumps there instead of paging by a few milliseconds.
+class Style : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+    int styleHint(StyleHint hint, const QStyleOption *o, const QWidget *w, QStyleHintReturn *r) const override {
+        if (hint == SH_Slider_AbsoluteSetButtons) return Qt::LeftButton;
+        return QProxyStyle::styleHint(hint, o, w, r);
+    }
+};
+
+void drawGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box) {
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing);
+    p.translate(box.topLeft());
+    p.scale(box.width(), box.height());  // draw in unit coordinates
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    auto tri = [&p](QPointF a, QPointF b, QPointF c) { p.drawPolygon(QPolygonF{a, b, c}); };
+    auto stroke = [&] {  // outline pen for the device glyphs; restores the fill brush after
+        p.setPen(QPen(color, .07));
+        p.setBrush(Qt::NoBrush);
+    };
+    auto outline = [&](const QRectF &r, qreal radius) {
+        stroke();
+        p.drawRoundedRect(r, radius, radius);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+    };
+    auto ring = [&](QPointF c, qreal r) {
+        stroke();
+        p.drawEllipse(c, r, r);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+    };
+    switch (g) {
+    case Glyph::Play: tri({.34, .22}, {.34, .78}, {.80, .50}); break;
+    case Glyph::Pause:
+        p.drawRoundedRect(QRectF(.27, .22, .15, .56), .03, .03);
+        p.drawRoundedRect(QRectF(.58, .22, .15, .56), .03, .03);
+        break;
+    case Glyph::Prev:
+        p.drawRoundedRect(QRectF(.24, .25, .08, .50), .02, .02);
+        tri({.76, .25}, {.76, .75}, {.34, .50});
+        break;
+    case Glyph::Next:
+        p.drawRoundedRect(QRectF(.68, .25, .08, .50), .02, .02);
+        tri({.24, .25}, {.24, .75}, {.66, .50});
+        break;
+    case Glyph::Heart: {
+        QPainterPath h;
+        h.moveTo(.50, .82);
+        h.cubicTo(.08, .55, .12, .18, .33, .20);
+        h.cubicTo(.43, .21, .48, .28, .50, .34);
+        h.cubicTo(.52, .28, .57, .21, .67, .20);
+        h.cubicTo(.88, .18, .92, .55, .50, .82);
+        p.drawPath(h);
+        break;
+    }
+    case Glyph::Grid:
+        for (qreal x : {.22, .54})
+            for (qreal y : {.22, .54}) p.drawRoundedRect(QRectF(x, y, .24, .24), .04, .04);
+        break;
+    case Glyph::Volume: {
+        p.drawPolygon(QPolygonF{{.16, .40}, {.30, .40}, {.48, .24}, {.48, .76}, {.30, .60}, {.16, .60}});
+        QPen pen(color, .07);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(.42, .32, .26, .36), -50 * 16, 100 * 16);
+        p.drawArc(QRectF(.42, .20, .44, .60), -50 * 16, 100 * 16);
+        break;
+    }
+    case Glyph::HeartOutline: {
+        QPainterPath h;
+        h.moveTo(.50, .80);
+        h.cubicTo(.10, .55, .14, .20, .34, .22);
+        h.cubicTo(.43, .23, .48, .29, .50, .35);
+        h.cubicTo(.52, .29, .57, .23, .66, .22);
+        h.cubicTo(.86, .20, .90, .55, .50, .80);
+        stroke();
+        p.drawPath(h);
+        break;
+    }
+    case Glyph::Plus:  // Spotify's "add to playlist": plus in a circle
+        ring(QPointF(.50, .50), .36);
+        p.drawRoundedRect(QRectF(.47, .32, .06, .36), .02, .02);
+        p.drawRoundedRect(QRectF(.32, .47, .36, .06), .02, .02);
+        break;
+    case Glyph::Check: {
+        QPen pen(color, .12);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(QPolygonF{{.26, .52}, {.43, .68}, {.74, .34}});
+        break;
+    }
+    case Glyph::Mic:
+        outline(QRectF(.38, .10, .24, .46), .12);
+        stroke();
+        p.drawArc(QRectF(.26, .26, .48, .44), 180 * 16, 180 * 16);  // cradle under the capsule
+        p.drawLine(QPointF(.50, .70), QPointF(.50, .86));
+        p.drawLine(QPointF(.38, .88), QPointF(.62, .88));
+        break;
+    // Device icons are outlines, like Spotify's Connect picker.
+    case Glyph::Computer:
+        outline(QRectF(.12, .20, .76, .48), .06);
+        p.drawRect(QRectF(.44, .68, .12, .10));
+        p.drawRoundedRect(QRectF(.30, .78, .40, .06), .02, .02);
+        break;
+    case Glyph::Phone:
+        outline(QRectF(.30, .10, .40, .80), .10);
+        p.drawEllipse(QPointF(.50, .76), .04, .04);
+        break;
+    case Glyph::Speaker:
+        outline(QRectF(.24, .10, .52, .80), .08);
+        p.drawEllipse(QPointF(.50, .30), .05, .05);
+        ring(QPointF(.50, .60), .14);
+        break;
+    case Glyph::Devices:  // the "Connect to a device" button: a phone beside a speaker
+        outline(QRectF(.42, .10, .48, .80), .08);
+        ring(QPointF(.66, .60), .12);
+        p.drawEllipse(QPointF(.66, .28), .045, .045);
+        outline(QRectF(.08, .36, .24, .54), .05);
+        break;
+    }
+    p.restore();
+}
+} // namespace
+
+void theme::apply(QApplication &app) {
+    app.setStyle(new Style(QStyleFactory::create("Fusion")));
+    QPalette pal;
+    pal.setColor(QPalette::Window, black);
+    pal.setColor(QPalette::WindowText, white);
+    pal.setColor(QPalette::Base, base);
+    pal.setColor(QPalette::AlternateBase, elevated);
+    pal.setColor(QPalette::Text, white);
+    pal.setColor(QPalette::Button, elevated);
+    pal.setColor(QPalette::ButtonText, white);
+    pal.setColor(QPalette::Highlight, green);
+    pal.setColor(QPalette::HighlightedText, black);
+    pal.setColor(QPalette::ToolTipBase, highlight);
+    pal.setColor(QPalette::ToolTipText, white);
+    pal.setColor(QPalette::PlaceholderText, subdued);
+    pal.setColor(QPalette::Link, subdued);
+    pal.setColor(QPalette::Disabled, QPalette::Text, subdued);
+    pal.setColor(QPalette::Disabled, QPalette::WindowText, subdued);
+    app.setPalette(pal);
+    app.setFont(QFont("Inter", 10));
+
+    // Spotify's layout: black window, rounded #121212 panels, green for the main action.
+    // Named tokens, not %1..%n: QString::arg() fills whichever placeholders exist in order,
+    // so one unused colour silently shifts every later one.
+    QString qss = R"(
+#main, #bar, QStatusBar { background: @black; }
+#sidebar, #pages, #panel { background: @base; border-radius: 8px; }
+QStackedWidget > QWidget { background: transparent; }
+#brand { font-family: "Inter Display"; font-size: 22px; font-weight: 800; }
+#h1 { font-family: "Inter Display"; font-size: 40px; font-weight: 800; }
+#npTitle { font-family: "Inter Display"; font-size: 22px; font-weight: 700; }
+#npArtist { font-size: 14px; color: @subdued; }
+#muted, #kind { color: @subdued; }
+#kind { font-size: 12px; font-weight: 600; color: @white; }
+
+QLineEdit { background: @highlight; border: 1px solid transparent; border-radius: 18px; padding: 8px 14px; }
+QLineEdit:hover { border-color: #3E3E3E; }
+QLineEdit:focus { border: 2px solid @white; padding: 7px 13px; }
+
+QListWidget, QTreeWidget { background: transparent; border: none; outline: 0; }
+#nav::item { padding: 6px; border-radius: 6px; }
+#nav::item:hover { background: @highlight; }
+#nav::item:selected { background: #3A3A3A; color: @white; }
+
+QTreeWidget::item { height: 40px; border: none; padding-left: 4px; }
+QTreeWidget::item:hover { background: @highlight; }
+QTreeWidget::item:selected { background: #3E3E3E; color: @white; }
+QHeaderView, QHeaderView::section { background: transparent; color: @subdued; border: none; }
+QHeaderView::section { border-bottom: 1px solid @highlight; padding: 0 8px 8px; font-size: 12px; }
+
+QScrollBar:vertical { background: transparent; width: 12px; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,0.28); min-height: 40px; margin: 2px 2px; }
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.5); }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+QScrollBar:horizontal { height: 0; }
+
+QSlider::groove:horizontal { height: 4px; background: #4D4D4D; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: @white; border-radius: 2px; }
+QSlider::handle:horizontal { width: 12px; margin: -4px 0; border-radius: 6px; background: @white; }
+QSlider::sub-page:horizontal:disabled, QSlider::handle:horizontal:disabled { background: #535353; }
+
+QToolButton { border: none; background: transparent; border-radius: 16px; padding: 6px; }
+QToolButton:hover { background: @highlight; }
+QToolButton:focus { border: 1px solid @subdued; }
+#play { background: @white; border-radius: 20px; }
+#play:hover { background: #F0F0F0; }
+#bigPlay { background: @green; border-radius: 27px; }
+#bigPlay:hover { background: @greenhover; }
+
+QStatusBar { color: @subdued; }
+QToolTip { background: @highlight; color: @white; border: none; padding: 4px 8px; }
+QMenu { background: #282828; border: none; border-radius: 6px; padding: 4px; }
+QMenu::item { padding: 9px 22px 9px 10px; border-radius: 3px; color: @white; }
+QMenu::item:selected { background: #3E3E3E; }
+QMenu::item:disabled { color: @subdued; }
+QMenu::icon { padding-left: 8px; }
+QMenu::separator { height: 1px; background: #3E3E3E; margin: 4px 8px; }
+#connectBar { background: @green; color: @black; font-weight: 700; padding: 3px 16px; }
+#currentDevice { color: @green; font-weight: 700; }
+#panelScroll, #panelScroll > QWidget, #panelScroll > QWidget > QWidget,
+#lyricsScroll, #lyricsScroll > QWidget, #lyricsScroll > QWidget > QWidget { background: transparent; border: none; }
+#artistCard { background: rgba(255,255,255,0.06); border-radius: 8px; }
+#artistName { font-family: "Inter Display"; font-size: 17px; font-weight: 700; }
+#aboutBadge { color: @white; font-weight: 700; background: rgba(0,0,0,0.45); border-radius: 4px; padding: 3px 7px; }
+#lyric { font-family: "Inter Display"; font-size: 30px; font-weight: 800; }
+#lyricsNote { color: rgba(255,255,255,0.7); font-size: 13px; }
+#saveIn QListWidget::indicator { width: 16px; height: 16px; border-radius: 9px; border: 2px solid #727272; margin-right: 6px; }
+#saveIn QListWidget::indicator:checked { background: @green; border-color: @green; image: url(@checkimg); }
+#done { background: @green; color: @black; font-weight: 700; border: none; border-radius: 14px; padding: 6px 20px; }
+#done:hover { background: @greenhover; }
+)";
+    const std::pair<const char *, QColor> tokens[] = {  // longest names first: @greenhover before @green
+        {"@greenhover", greenHover}, {"@highlight", highlight}, {"@elevated", elevated}, {"@subdued", subdued},
+        {"@black", black}, {"@white", white}, {"@green", green}, {"@base", base}};
+    for (const auto &[name, color] : tokens) qss.replace(name, color.name());
+    // QSS draws check marks only from an image file, so paint ours once into the cache.
+    QString check = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/check.png";
+    QDir().mkpath(QFileInfo(check).path());
+    glyphIcon(Glyph::Check, black, 16).pixmap(QSize(16, 16), 2.0).save(check);
+    qss.replace("@checkimg", check);
+    // Keep each border-radius at most half its widget's height: past that, Qt drops the rounding.
+    app.setStyleSheet(qss);
+}
+
+QIcon glyphIcon(Glyph g, const QColor &color, int size) {
+    const qreal dpr = 2;  // drawn at 2x: crisp on HiDPI, downsampled cleanly elsewhere
+    QPixmap pm(QSize(size, size) * dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    drawGlyph(p, g, color, QRectF(0, 0, size * dpr, size * dpr));
+    p.end();
+    pm.setDevicePixelRatio(dpr);
+    return QIcon(pm);
+}
+
+// Painted in device pixels, dpr stamped on at the end, so text-sharp at any scale.
+QPixmap rounded(const QPixmap &src, QSize size, qreal radius, qreal dpr) {
+    QSize px = size * dpr;
+    QPixmap out(px);
+    out.fill(Qt::transparent);
+    if (!src.isNull()) {  // cover-fit: crop the centre (biased up, where faces usually are)
+        QPixmap fit = src.scaled(px, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        QPainter p(&out);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        QBrush brush(fit);  // a textured brush keeps the rounded edge antialiased; clip paths don't
+        brush.setTransform(QTransform::fromTranslate((px.width() - fit.width()) / 2.0,
+                                                     (px.height() - fit.height()) / 3.0));
+        p.setBrush(brush);
+        p.drawRoundedRect(QRectF(QPointF(0, 0), QSizeF(px)), radius * dpr, radius * dpr);
+    }
+    out.setDevicePixelRatio(dpr);
+    return out;
+}
+
+QPixmap tile(int size, qreal radius, qreal dpr, const QColor &bg, const QColor &fg, const Glyph *glyph,
+             const QColor &bg2) {
+    int px = qRound(size * dpr);
+    QPixmap out(px, px);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    if (bg2.isValid()) {
+        QLinearGradient grad(0, 0, px, px);
+        grad.setColorAt(0, bg);
+        grad.setColorAt(1, bg2);
+        p.setBrush(grad);
+    } else {
+        p.setBrush(bg);
+    }
+    p.drawRoundedRect(QRectF(0, 0, px, px), radius * dpr, radius * dpr);
+    if (glyph) {  // half the tile on thumbnails, capped so big tiles stay calm
+        qreal g = std::min(px * .5, 56 * dpr);
+        drawGlyph(p, *glyph, fg, QRectF((px - g) / 2, (px - g) / 2, g, g));
+    }
+    p.end();
+    out.setDevicePixelRatio(dpr);
+    return out;
+}
+
+// Spotify's mark: green disc, three black arcs that shorten and thin towards the bottom.
+QPixmap spotifyLogo(int size, qreal dpr) {
+    int px = qRound(size * dpr);
+    QPixmap out(px, px);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.scale(px, px);
+    p.setPen(Qt::NoPen);
+    p.setBrush(theme::green);
+    p.drawEllipse(QRectF(0, 0, 1, 1));
+    p.setBrush(Qt::NoBrush);
+    struct Arc { QPointF from, ctrl, to; qreal width; };
+    for (const Arc &a : {Arc{{.22, .36}, {.52, .23}, {.80, .41}, .105},
+                         Arc{{.26, .53}, {.51, .42}, {.74, .56}, .085},
+                         Arc{{.30, .69}, {.50, .61}, {.69, .71}, .068}}) {
+        QPen pen(theme::black, a.width);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        QPainterPath path(a.from);
+        path.quadTo(a.ctrl, a.to);
+        p.drawPath(path);
+    }
+    p.end();
+    out.setDevicePixelRatio(dpr);
+    return out;
+}
+
+QColor moodColor(const QPixmap &cover) {
+    // An 8x8 smooth downscale averages regions; the most vivid region beats the muddy global mean.
+    QImage img = cover.toImage().scaled(8, 8, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QColor best;
+    float bestScore = 0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            QColor c = img.pixelColor(x, y);
+            float score = c.hsvSaturationF() * c.valueF();
+            if (score > bestScore) bestScore = score, best = c;
+        }
+    return bestScore < 0.12f ? QColor() : best;  // invalid = monochrome cover
+}
+
+QColor washFrom(const QColor &mood) {
+    if (!mood.isValid()) return theme::highlight;
+    return QColor::fromHslF(mood.hslHueF(), std::min(mood.hslSaturationF(), 0.55f), 0.24f);
+}
+
+// Small on purpose: every view keeps its own scaled copy, so this only bridges repeat loads.
+ImageCache::ImageCache(QObject *parent) : QObject(parent), memory(16 * 1024) {
+    auto *disk = new QNetworkDiskCache(this);
+    disk->setCacheDirectory(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/images");
+    disk->setMaximumCacheSize(qint64(200) << 20);
+    net.setCache(disk);
+}
+
+void ImageCache::load(const QString &url, QObject *context, Done done) {
+    if (url.isEmpty()) return;
+    if (auto *pm = memory.object(url)) return done(*pm);
+    auto &waiters = pending[url];
+    waiters.append({context, std::move(done)});
+    if (waiters.size() > 1) return;  // already downloading
+    QNetworkRequest req{QUrl(url)};
+    req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+    auto *reply = net.get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+        reply->deleteLater();
+        QPixmap pm;
+        // ponytail: decodes on the UI thread (a few ms per cover); move to QtConcurrent if grids stutter
+        if (!pm.loadFromData(reply->readAll())) return void(pending.remove(url));
+        memory.insert(url, new QPixmap(pm), pm.width() * pm.height() * 4 / 1024);
+        for (auto &[ctx, cb] : pending.take(url))
+            if (ctx) cb(pm);
+    });
+}
+
+void CardDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const {
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing);
+    p->setPen(Qt::NoPen);
+    QRectF cell = QRectF(opt.rect).adjusted(3, 3, -3, -3);
+    if (opt.state & (QStyle::State_MouseOver | QStyle::State_Selected)) {
+        p->setBrush(theme::elevated);
+        p->drawRoundedRect(cell, 10, 10);
+    }
+    if (opt.state & QStyle::State_HasFocus) {  // keyboard users need to see where they are
+        p->setPen(QPen(theme::subdued, 1));
+        p->setBrush(Qt::NoBrush);
+        p->drawRoundedRect(cell, 10, 10);
+        p->setPen(Qt::NoPen);
+    }
+
+    QRect cover(opt.rect.x() + Pad, opt.rect.y() + Pad, Cover, Cover);
+    auto pm = idx.data(Qt::DecorationRole).value<QPixmap>();
+    if (pm.isNull()) {
+        p->setBrush(theme::highlight);
+        p->drawRoundedRect(cover, 6, 6);
+    } else {
+        p->drawPixmap(cover, pm);
+    }
+
+    QFont f = opt.font;
+    f.setWeight(QFont::DemiBold);
+    QRect line(cover.left(), cover.bottom() + 10, Cover, 19);
+    p->setFont(f);
+    p->setPen(theme::white);
+    p->drawText(line, Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(idx.data().toString(), Qt::ElideRight, Cover));
+    f.setWeight(QFont::Normal);
+    p->setFont(f);
+    p->setPen(theme::subdued);
+    p->drawText(line.translated(0, 19), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(idx.data(Role::Subtitle).toString(), Qt::ElideRight, Cover));
+    p->restore();
+}
