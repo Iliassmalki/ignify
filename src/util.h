@@ -28,6 +28,28 @@ inline QJsonObject unwrapTrack(const QJsonObject &entry) {
     return t.isEmpty() ? entry["item"].toObject() : t;
 }
 
+// Only what a song row needs, so a cached list stays small (no markets, links or ids of
+// everything). Keeps the entry's shape: {added_at, track}.
+inline QJsonObject compactEntry(const QJsonObject &entry) {
+    auto t = unwrapTrack(entry);
+    QJsonObject track;
+    for (auto field : {"name", "uri", "duration_ms", "is_local"})
+        if (t.contains(field)) track[field] = t[field];
+    QJsonArray artists;
+    for (const auto &v : t["artists"].toArray()) {
+        auto a = v.toObject();
+        artists << QJsonObject{{"id", a["id"]}, {"name", a["name"]}, {"uri", a["uri"]}};
+    }
+    track["artists"] = artists;
+    if (t.contains("album")) {  // album tracks have none: the page knows the album
+        auto album = t["album"].toObject();
+        track["album"] = QJsonObject{{"name", album["name"]}, {"images", album["images"]}};
+    }
+    QJsonObject out{{"track", track}};
+    if (entry.contains("added_at")) out["added_at"] = entry["added_at"];
+    return out;
+}
+
 inline QString joinNames(const QJsonArray &artists) {
     QStringList names;
     for (const auto &a : artists) names << a.toObject()["name"].toString();

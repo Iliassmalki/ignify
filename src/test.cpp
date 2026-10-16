@@ -18,6 +18,22 @@ int main() {
     assert(unwrapTrack({{"item", bare}})["uri"] == "spotify:track:a");
     assert(unwrapTrack({{"track", QJsonValue::Null}}).isEmpty());  // removed track
 
+    // compactEntry keeps what a row shows and drops the rest
+    QJsonObject full{{"added_at", "2024-05-25T10:00:00Z"},
+                     {"track", QJsonObject{{"name", "Song"}, {"uri", "spotify:track:a"}, {"duration_ms", 1000},
+                                           {"available_markets", QJsonArray{"MA", "FR"}},
+                                           {"artists", QJsonArray{QJsonObject{{"id", "x"}, {"name", "X"}, {"href", "h"}}}},
+                                           {"album", QJsonObject{{"name", "LP"}, {"images", QJsonArray{"i"}}, {"href", "h"}}}}}};
+    auto small = compactEntry(full);
+    auto t = unwrapTrack(small);
+    assert(t["uri"] == "spotify:track:a" && t["name"] == "Song" && t["duration_ms"] == 1000);
+    assert(small["added_at"] == "2024-05-25T10:00:00Z" && !t.contains("available_markets"));
+    assert(joinNames(t["artists"].toArray()) == "X" && !t["artists"][0].toObject().contains("href"));
+    auto album = t["album"].toObject();
+    assert(album["name"] == "LP" && album["images"].toArray().size() == 1 && !album.contains("href"));
+    assert(!unwrapTrack(compactEntry(QJsonObject{{"uri", "spotify:track:b"}})).contains("album"));  // album page tracks
+    assert(compactEntry(full) == compactEntry(small));  // compacting twice changes nothing
+
     assert(joinNames(QJsonArray{QJsonObject{{"name", "A"}}, QJsonObject{{"name", "B"}}}) == "A, B");
 
     auto img = [](int w, const char *url) { return QJsonObject{{"width", w}, {"url", url}}; };

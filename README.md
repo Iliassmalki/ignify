@@ -57,6 +57,10 @@ ignify itself and one for librespot. Both are remembered after that:
   playlist), search in the list, and a sort (custom order, title, artist, album, date
   added, duration). Rows show the album thumbnail, artist, album, date added and length.
   Double-click a song to play; click the grey artist name to open the artist.
+- **Lists open instantly the second time.** Every playlist, album and Liked Songs you open is
+  kept (trimmed to what a row shows) in memory and in `~/.cache/ignify/ignify/lists/`. It
+  shows from there at once, even after a restart, and is checked against Spotify in the
+  background; if it changed, the page redraws. Albums can't change, so they aren't asked again.
 - **Playlists you follow**: Spotify only lets apps list the songs of playlists you own or
   collaborate on (2026 API rules), and answers anything else with 403. ignify says so on
   the page. Press play and the songs fill in from Spotify's queue as it plays.
@@ -113,7 +117,7 @@ change.
 
 | measured | budget | official Spotify (same laptop) |
 |---|---|---|
-| binary 0.84 MB | 1 MB | 347 MB install |
+| binary 0.86 MB | 1 MB | 347 MB install |
 | memory 47 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
 | CPU ~1% (+~2% librespot) while playing | 3% | 23% idle on the home screen |
 
@@ -161,7 +165,8 @@ errors and no leaks. Hostile data was replayed with `MOCK_EVIL=1` and `MOCK_FOLL
 - **The access token** is only sent to the Spotify API. Pagination links pointing anywhere
   else are refused.
 - **Secrets**: the refresh token lives in `~/.config/ignify/` (folder 0700, file 0600), and
-  librespot's saved login in `~/.cache/ignify/` (folder 0700).
+  librespot's saved login in `~/.cache/ignify/` (folder 0700). Cached track lists (what you
+  listen to) sit in an owner-only folder too.
 - **Sign-in**: PKCE with a `state` check, and a loopback server on 127.0.0.1 only.
 - **Shutdown**: librespot gets SIGINT so it leaves Spotify Connect cleanly, and is only
   killed after 3 s.

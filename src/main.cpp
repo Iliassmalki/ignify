@@ -48,6 +48,8 @@ struct ListInfo {
     QPixmap fallback;      // shown when there's no cover url (Liked Songs)
     bool albumView = false;  // album tracks: no thumbnails, album or date columns
     bool dated = false;      // show "Date added" (playlists, Liked Songs)
+    QString cacheId;         // lists seen before show at once from the cache; empty = never cached
+    bool fixed = false;      // an album's songs never change, so a cached copy isn't checked again
     QColor tint;             // header colour before a cover arrives (Liked Songs' purple)
 };
 
@@ -423,6 +425,7 @@ private:
         tracks->setSelectionMode(QAbstractItemView::ExtendedSelection);  // shift/ctrl-click several songs
         tracks->setContextMenuPolicy(Qt::CustomContextMenu);
         titleDelegate = new TrackTitleDelegate(tracks);
+        tracks->viewport()->installEventFilter(this);
         tracks->setItemDelegateForColumn(Title, titleDelegate);
         auto *h = tracks->header();
         h->setStretchLastSection(false);
@@ -529,7 +532,7 @@ private:
         int count = listTotal >= 0 ? listTotal : int(uris.size());
         QString songs = formatCount(count) + (count == 1 ? " song" : " songs");
         if (listDurationMs > 0 && !listBlocked) songs += ", " + formatLength(listDurationMs);
-        parts << songs;
+        if (listTotal >= 0 || count > 0) parts << songs;  // not "0 songs" while the first page loads
         headMeta->setText(parts.join(" &#8226; "));
     }
 
@@ -853,6 +856,7 @@ private:
             info.title = "Liked Songs";
             info.lead = myName.toHtmlEscaped();
             info.path = "/me/tracks?limit=50";
+            info.cacheId = "liked";
             info.fallback = tile(232, 6, dpr(), likedFrom, theme::white, &heart, likedTo);
             info.dated = true;
             info.tint = QColor("#5038A0");  // Spotify's Liked Songs header
@@ -871,6 +875,7 @@ private:
             info.coverUrl = imageUrl(pl["images"].toArray(), 464);
             // Always ask; for a playlist you only follow Spotify answers 403, and that is what we show.
             info.path = "/playlists/" + pl["id"].toString() + "/items?limit=50";
+            info.cacheId = "playlist:" + pl["id"].toString();
             info.context = pl["uri"].toString();
             info.dated = true;
             openList(info);
@@ -894,6 +899,8 @@ private:
         info.total = a["total_tracks"].toInt(-1);
         info.coverUrl = imageUrl(a["images"].toArray(), 464);
         info.path = "/albums/" + a["id"].toString() + "/tracks?limit=50";
+        info.cacheId = "album:" + a["id"].toString();
+        info.fixed = true;
         info.context = a["uri"].toString();
         info.albumView = true;
         openList(info);
@@ -961,12 +968,34 @@ private:
         fitTracks();
         if (info.path.isEmpty()) return;
         int gen = loadGen;
+        // A list seen before shows at once from the cache, then is checked against Spotify in the
+        // background and redrawn only if it changed.
+        QJsonArray cached = info.cacheId.isEmpty() ? QJsonArray() : cachedList(info.cacheId);
+        bool shown = !cached.isEmpty();
+        if (shown) {
+            addTracks(cached);
+            refreshMeta();
+            if (info.fixed) return;
+        }
+        auto fresh = std::make_shared<QJsonArray>();
         api->getAll(
             info.path,
-            [this, gen](const QJsonObject &page) {
-                if (gen != loadGen) return false;  // user moved on; stop paging
-                if (listTotal < 0) listTotal = page["total"].toInt(-1);
-                addTracks(page["items"].toArray());
+            [this, gen, shown, cached, fresh, id = info.cacheId](const QJsonObject &page) {
+                if (gen != loadGen) return false;  // user moved on; stop paging (and cache nothing)
+                listTotal = page["total"].toInt(listTotal);  // fresher than the library's count
+                QJsonArray items;
+                for (const auto &v : page["items"].toArray()) items << compactEntry(v.toObject());
+                for (const auto &v : items) fresh->append(v);
+                if (!shown) addTracks(items);
+                if (page["next"].toString().isEmpty()) {  // the last page
+                    if (!id.isEmpty()) storeList(id, *fresh);
+                    if (shown && *fresh != cached) {
+                        tracks->clear();
+                        uris.clear();
+                        listDurationMs = 0;
+                        addTracks(*fresh);
+                    }
+                }
                 refreshMeta();
                 return true;
             },
@@ -1014,6 +1043,36 @@ private:
                 noteBody->setText("These are the songs Spotify has queued from this playlist so far. More appear as it plays.");
             });
         });
+    }
+
+    // Track lists are kept in memory and on disk, so a list opened before shows at once, even
+    // after a restart. ponytail: one small file per list ever opened, never pruned; prune by age
+    // if the folder ever matters.
+    static QString listFile(const QString &id) {
+        return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/lists/" +
+               QCryptographicHash::hash(id.toUtf8(), QCryptographicHash::Sha1).toHex() + ".json";
+    }
+
+    QJsonArray cachedList(const QString &id) {
+        if (auto it = listCache.constFind(id); it != listCache.cend()) return *it;
+        QFile f(listFile(id));
+        if (!f.open(QIODevice::ReadOnly)) return {};
+        auto doc = QJsonDocument::fromJson(f.readAll()).object();
+        if (doc["id"].toString() != id) return {};  // unreadable, or not the file we wrote
+        return listCache[id] = doc["items"].toArray();
+    }
+
+    void storeList(const QString &id, const QJsonArray &items) {
+        listCache[id] = items;
+        QString path = listFile(id), dir = QFileInfo(path).path();
+        QDir().mkpath(dir);
+        // What someone listens to is private: owner-only, like librespot's folder.
+        QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QSaveFile f(path);  // written whole or not at all
+        if (f.open(QIODevice::WriteOnly)) {
+            f.write(QJsonDocument(QJsonObject{{"id", id}, {"items", items}}).toJson(QJsonDocument::Compact));
+            f.commit();
+        }
     }
 
     void addTracks(const QJsonArray &items) {
@@ -1087,7 +1146,9 @@ private:
     // Album thumbnails only for rows on screen; rows of the same album share one image.
     void syncTrackThumbs() {
         if (!titleDelegate->thumbs || pages->currentWidget() != listPage || !tracks->isVisible()) return;
-        QRect visible = tracks->viewport()->visibleRegion().boundingRect();
+        // The part of the table inside the page's viewport (the table itself never scrolls).
+        auto *view = listPage->viewport();
+        QRect visible = QRect(tracks->viewport()->mapFrom(view, QPoint(0, 0)), view->size()).intersected(tracks->viewport()->rect());
         if (visible.isEmpty()) return;
         for (auto *it = tracks->itemAt(QPoint(4, visible.top() + 1)); it && tracks->visualItemRect(it).top() <= visible.bottom();
              it = tracks->itemBelow(it)) {
@@ -1609,7 +1670,9 @@ private:
     bool eventFilter(QObject *o, QEvent *e) override {
         // Pages are built one after another; a resize can arrive before the last grid exists.
         if (e->type() == QEvent::Resize && o == headTitle) fitTitle();
-        if (e->type() == QEvent::Resize && listPage && o == listPage->viewport()) QTimer::singleShot(0, this, &Window::syncTrackThumbs);
+        // Also when the table grows: rows that arrive are only on screen once the table has their height.
+        if (e->type() == QEvent::Resize && listPage && (o == listPage->viewport() || o == tracks->viewport()))
+            QTimer::singleShot(0, this, &Window::syncTrackThumbs);
         if (e->type() == QEvent::Resize && artistAlbums && (o == homePage->viewport() || o == artistPage->viewport())) {
             QTimer::singleShot(0, this, [this] {
                 for (auto *g : {homeArtists, homeSongs, artistAlbums}) fitGrid(g);
@@ -2447,6 +2510,7 @@ private:
     int listTotal = -1;
     qint64 listDurationMs = 0;
     bool listBlocked = false;
+    QHash<QString, QJsonArray> listCache;  // track lists already read this session, by cache id
     // history, library, home, artist, queue, modes, extra views, media keys
     QList<std::function<void()>> history;
     int histPos = -1;

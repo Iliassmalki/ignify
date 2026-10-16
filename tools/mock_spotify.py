@@ -14,6 +14,7 @@ Security test switches (off by default):
   MOCK_EVIL=1           HTML in playlist/track names (incl. a local <img>), and an albums "next"
                         link outside /v1 that logs any Authorization header it receives
   MOCK_FOLLOWED_ONLY=1  the user owns no playlists
+  MOCK_DELAY=3          playlist and Liked Songs pages take 3 s, to see what the list cache hides
 """
 import json, os, re, struct, sys, time, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -107,6 +108,7 @@ PLAYLISTS.append(("Panic Attack 🧜‍♀️", "Zineb"))  # followed, emoji in 
 if EVIL:  # a followed playlist's name is written by someone else
     PLAYLISTS.append((f'<img src="{LOCAL_IMG}"><span style="font-size:60px;color:red">PWNED</span>', "stranger"))
 LIKED = {"spotify:track:0-3"}
+ADDED = {}  # playlist index -> uris added through POST, so a re-opened playlist has changed
 PLAYER = {"shuffle": False, "repeat": "off", "context": "spotify:album:al0", "queue": [track(0, n) for n in range(2, 8)]}
 STARTED, READY = time.time(), False
 
@@ -159,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"next": None, "items": [
                 {"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": n, "collaborative": False,
                  "owner": {"id": owner, "display_name": "Iliass" if owner == "me" else owner.title()}, "public": i % 2 == 0,
-                 "items": {"total": 10}, "images": images(i + 3)} for i, (n, owner) in enumerate(PLAYLISTS)]})
+                 "items": {"total": 5 if i == 3 else 10}, "images": images(i + 3)} for i, (n, owner) in enumerate(PLAYLISTS)]})
         if m := re.fullmatch(r"/v1/playlists/pl(\d+)", path):  # playlist metadata
             i = int(m[1])
             n, owner = PLAYLISTS[i] if i < len(PLAYLISTS) else (f"New playlist {i}", "me")
@@ -190,8 +192,15 @@ class Handler(BaseHTTPRequestHandler):
             if i < len(PLAYLISTS) and PLAYLISTS[i][1] != "me":
                 return self.send_json({"error": {"status": 403, "message": "Forbidden"}}, 403)
         if path == "/v1/me/tracks" or path.startswith("/v1/playlists/"):
-            return self.send_json({"total": 10, "next": None, "items": [{"track": track(n, n), "added_at": f"2025-0{n % 9 + 1}-1{n}T10:00:00Z"}
-                                                                        for n in range(10)]})
+            time.sleep(float(os.environ.get("MOCK_DELAY", 0)))  # a slow network, to see what the cache hides
+            m = re.fullmatch(r"/v1/playlists/pl(\d+)/items", path)
+            i = int(m[1]) if m else -1
+            size = 5 if i == 3 else 10  # "Focus" is short: no scrollbar, every row on screen at once
+            items = [{"track": track(n, n), "added_at": f"2025-0{n % 9 + 1}-1{n}T10:00:00Z"} for n in range(size)]
+            for uri in ADDED.get(i, []):
+                a, n = (uri.rsplit(":", 1)[1].split("-") + ["0"])[:2]
+                items.append({"track": track(int(a), int(n)), "added_at": "2026-10-16T12:00:00Z"})
+            return self.send_json({"total": len(items), "next": None, "items": items})
         if m := re.fullmatch(r"/v1/albums/al(\d+)/tracks", path):
             a = int(m[1])
             return self.send_json({"next": None, "items": [{k: v for k, v in track(a, n).items() if k != "album"}
@@ -248,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "scope": SCOPES})
         print("POST", self.path, body, flush=True)
         path = urlparse(self.path).path
-        if re.fullmatch(r"/v1/playlists/pl\d+/items", path):
+        if m := re.fullmatch(r"/v1/playlists/pl(\d+)/items", path):
+            ADDED.setdefault(int(m[1]), []).extend(json.loads(body).get("uris", []))
             return self.send_json({"snapshot_id": "mock"}, 201)
         if path == "/v1/me/playlists":  # create
             name = json.loads(body).get("name", "New playlist")
