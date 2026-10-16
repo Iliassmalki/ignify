@@ -1,6 +1,7 @@
 #include "ui.h"
 #include <QApplication>
 #include <algorithm>
+#include <tuple>
 #include <QNetworkDiskCache>
 #include <QNetworkReply>
 #include <QPainter>
@@ -18,6 +19,7 @@ public:
     using QProxyStyle::QProxyStyle;
     int styleHint(StyleHint hint, const QStyleOption *o, const QWidget *w, QStyleHintReturn *r) const override {
         if (hint == SH_Slider_AbsoluteSetButtons) return Qt::LeftButton;
+        if (hint == SH_DialogButtonBox_ButtonsHaveIcons) return 0;  // no stock icons on OK/Cancel
         return QProxyStyle::styleHint(hint, o, w, r);
     }
 };
@@ -30,10 +32,14 @@ void drawGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box) {
     p.setPen(Qt::NoPen);
     p.setBrush(color);
     auto tri = [&p](QPointF a, QPointF b, QPointF c) { p.drawPolygon(QPolygonF{a, b, c}); };
-    auto stroke = [&] {  // outline pen for the device glyphs; restores the fill brush after
-        p.setPen(QPen(color, .07));
+    auto stroke = [&] {  // outline pen for the line glyphs; outline()/ring() restore the fill brush after
+        QPen pen(color, .07);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
         p.setBrush(Qt::NoBrush);
     };
+    auto line = [&](QPointF a, QPointF b) { p.drawLine(a, b); };
     auto outline = [&](const QRectF &r, qreal radius) {
         stroke();
         p.drawRoundedRect(r, radius, radius);
@@ -109,6 +115,90 @@ void drawGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box) {
         p.drawPolyline(QPolygonF{{.26, .52}, {.43, .68}, {.74, .34}});
         break;
     }
+    case Glyph::Shuffle: {  // two crossing paths, arrowheads on the right
+        stroke();
+        QPainterPath a(QPointF(.12, .30)), b(QPointF(.12, .70));
+        a.cubicTo(.44, .30, .48, .70, .78, .70);
+        b.cubicTo(.44, .70, .48, .30, .78, .30);
+        p.drawPath(a);
+        p.drawPath(b);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        tri({.76, .20}, {.76, .40}, {.92, .30});
+        tri({.76, .60}, {.76, .80}, {.92, .70});
+        break;
+    }
+    case Glyph::Repeat:
+    case Glyph::RepeatOne:
+        stroke();
+        p.drawRoundedRect(QRectF(.14, .28, .72, .44), .14, .14);
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        tri({.56, .18}, {.56, .38}, {.70, .28});  // direction of travel on the top edge
+        if (g == Glyph::RepeatOne) {
+            stroke();
+            line({.50, .42}, {.50, .62});
+            line({.44, .47}, {.50, .42});
+        }
+        break;
+    case Glyph::Queue:
+        stroke();
+        line({.14, .28}, {.62, .28});
+        line({.14, .48}, {.62, .48});
+        line({.14, .68}, {.48, .68});
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        tri({.62, .58}, {.62, .86}, {.88, .72});
+        break;
+    case Glyph::MiniPlayer:
+        outline(QRectF(.10, .20, .80, .60), .08);
+        p.drawRoundedRect(QRectF(.48, .46, .32, .26), .04, .04);
+        break;
+    case Glyph::FullScreen:
+        stroke();
+        for (auto [x, y, dx, dy] : {std::tuple{.16, .16, 1, 1}, {.84, .16, -1, 1}, {.16, .84, 1, -1}, {.84, .84, -1, -1}}) {
+            line({x, y + dy * .22}, {x, y});
+            line({x, y}, {x + dx * .22, y});
+        }
+        break;
+    case Glyph::Home: {
+        stroke();
+        QPainterPath h(QPointF(.18, .46));
+        h.lineTo(.50, .18);
+        h.lineTo(.82, .46);
+        h.lineTo(.82, .84);
+        h.lineTo(.18, .84);
+        h.closeSubpath();
+        p.drawPath(h);
+        break;
+    }
+    case Glyph::Back:
+    case Glyph::Forward: {
+        QPen pen(color, .09);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        qreal tip = g == Glyph::Back ? .34 : .66, tail = g == Glyph::Back ? .62 : .38;
+        p.drawPolyline(QPolygonF{{tail, .20}, {tip, .50}, {tail, .80}});
+        break;
+    }
+    case Glyph::Search:
+        stroke();
+        p.drawEllipse(QPointF(.44, .44), .26, .26);
+        line({.63, .63}, {.84, .84});
+        break;
+    case Glyph::Sort:
+        stroke();
+        line({.18, .30}, {.82, .30});
+        line({.18, .50}, {.66, .50});
+        line({.18, .70}, {.50, .70});
+        break;
+    case Glyph::Close:
+        stroke();
+        line({.26, .26}, {.74, .74});
+        line({.74, .26}, {.26, .74});
+        break;
     case Glyph::Mic:
         outline(QRectF(.38, .10, .24, .46), .12);
         stroke();
@@ -233,6 +323,24 @@ QMenu::separator { height: 1px; background: #3E3E3E; margin: 4px 8px; }
 #saveIn QListWidget::indicator:checked { background: @green; border-color: @green; image: url(@checkimg); }
 #done { background: @green; color: @black; font-weight: 700; border: none; border-radius: 14px; padding: 6px 20px; }
 #done:hover { background: @greenhover; }
+#tab { color: @subdued; font-weight: 700; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 2px; margin-right: 14px; }
+#tab:checked { color: @white; border-bottom-color: @green; }
+#tab:hover { color: @white; background: transparent; }
+#section { font-family: "Inter Display"; font-size: 22px; font-weight: 700; }
+#shortcut { background: rgba(255,255,255,0.07); border-radius: 4px; }
+#shortcut:hover { background: rgba(255,255,255,0.14); }
+#shortcutName { font-weight: 700; }
+#chip { background: @highlight; color: @white; border: none; border-radius: 15px; padding: 5px 14px; min-height: 20px; font-weight: 600; }
+#chip:checked { background: @white; color: @black; }
+#chip:hover { background: #3E3E3E; }
+#chip:checked:hover { background: #F0F0F0; }
+#ghost { background: transparent; color: @white; border: 1px solid #727272; border-radius: 15px; padding: 5px 16px; min-height: 20px; font-weight: 700; }
+#ghost:hover { border-color: @white; }
+#libFilter { padding: 5px 10px; border-radius: 4px; }
+#homeScroll, #homeScroll > QWidget, #homeScroll > QWidget > QWidget,
+#artistScroll, #artistScroll > QWidget, #artistScroll > QWidget > QWidget,
+#sideStack, #sideStack > QWidget { background: transparent; border: none; }
+#kbd { background: @highlight; border-radius: 4px; padding: 3px 8px; font-weight: 700; }
 )";
     const std::pair<const char *, QColor> tokens[] = {  // longest names first: @greenhover before @green
         {"@greenhover", greenHover}, {"@highlight", highlight}, {"@elevated", elevated}, {"@subdued", subdued},
@@ -245,6 +353,25 @@ QMenu::separator { height: 1px; background: #3E3E3E; margin: 4px 8px; }
     qss.replace("@checkimg", check);
     // Keep each border-radius at most half its widget's height: past that, Qt drops the rounding.
     app.setStyleSheet(qss);
+}
+
+void paintGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box) { drawGlyph(p, g, color, box); }
+
+QIcon toggleIcon(Glyph g, bool on, int size) {
+    const qreal dpr = 2;
+    QPixmap pm(QSize(size, size + 6) * dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    drawGlyph(p, g, on ? theme::green : theme::white, QRectF(0, 0, size * dpr, size * dpr));
+    if (on) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(theme::green);
+        p.drawEllipse(QPointF(size * dpr / 2, (size + 4) * dpr), 2 * dpr, 2 * dpr);
+    }
+    p.end();
+    pm.setDevicePixelRatio(dpr);
+    return QIcon(pm);
 }
 
 QIcon glyphIcon(Glyph g, const QColor &color, int size) {
@@ -435,7 +562,8 @@ void CardDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QMo
     auto pm = idx.data(Qt::DecorationRole).value<QPixmap>();
     if (pm.isNull()) {
         p->setBrush(theme::highlight);
-        p->drawRoundedRect(cover, 6, 6);
+        if (idx.data(Role::Kind).toInt() == Round) p->drawEllipse(cover);
+        else p->drawRoundedRect(cover, 6, 6);
     } else {
         p->drawPixmap(cover, pm);
     }
@@ -452,5 +580,53 @@ void CardDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QMo
     p->setPen(theme::subdued);
     p->drawText(line.translated(0, 19), Qt::AlignLeft | Qt::AlignVCenter,
                 QFontMetrics(f).elidedText(idx.data(Role::Subtitle).toString(), Qt::ElideRight, Cover));
+    p->restore();
+}
+
+QSize RowDelegate::sizeHint(const QStyleOptionViewItem &, const QModelIndex &idx) const {
+    return {0, idx.data(Role::Kind).toInt() == Header ? 44 : 58};
+}
+
+void RowDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const {
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing);
+    QRect r = opt.rect;
+    QFont f = opt.font;
+    int kind = idx.data(Role::Kind).toInt();
+    if (kind == Header) {
+        f.setPointSizeF(f.pointSizeF() * 1.15);
+        f.setWeight(QFont::Bold);
+        p->setFont(f);
+        p->setPen(theme::white);
+        p->drawText(r.adjusted(8, 0, -8, -6), Qt::AlignLeft | Qt::AlignBottom,
+                    QFontMetrics(f).elidedText(idx.data().toString(), Qt::ElideRight, r.width() - 16));
+        p->restore();
+        return;
+    }
+    if (opt.state & (QStyle::State_MouseOver | QStyle::State_Selected)) {
+        p->setPen(Qt::NoPen);
+        p->setBrush(theme::highlight);
+        p->drawRoundedRect(QRectF(r).adjusted(2, 1, -2, -1), 6, 6);
+    }
+    QRect cover(r.x() + 8, r.y() + (r.height() - 40) / 2, 40, 40);
+    auto pm = idx.data(Qt::DecorationRole).value<QPixmap>();
+    if (pm.isNull()) {
+        p->setPen(Qt::NoPen);
+        p->setBrush(theme::highlight);
+        p->drawRoundedRect(cover, 4, 4);
+    } else {
+        p->drawPixmap(cover, pm);
+    }
+    int textX = cover.right() + 12, textW = r.right() - textX - 8;
+    f.setWeight(QFont::Medium);
+    p->setFont(f);
+    p->setPen(kind == Current ? theme::green : theme::white);
+    p->drawText(QRect(textX, r.y() + 9, textW, 20), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(idx.data().toString(), Qt::ElideRight, textW));
+    f.setWeight(QFont::Normal);
+    p->setFont(f);
+    p->setPen(theme::subdued);
+    p->drawText(QRect(textX, r.y() + 29, textW, 20), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(idx.data(Role::Subtitle).toString(), Qt::ElideRight, textW));
     p->restore();
 }

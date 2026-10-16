@@ -1,7 +1,8 @@
 # Reviewed false positives, pinned by checksum (any edit to these files is re-scanned):
 #   README.md, tools/footprint.py  fake mock Client ID 0123456789abcdef... (not a credential)
 #   src/test.cpp                   RFC 7636 appendix B PKCE test vector (public)
-#   src/main.cpp                   "key" matches in QKeySequence shortcuts
+#   src/main.cpp, src/views.cpp    "key" matches in keyboard-shortcut code (QKeySequence, Qt::Key_*, cacheKey)
+#   src/mpris.h                    "media keys" in a comment
 fileignoreconfig:
 - filename: README.md
   checksum: 762cc88bbfc647aa987b51f8e685a03c5c831cb21fdec88bc17662b44af2576c
@@ -10,5 +11,9 @@ fileignoreconfig:
 - filename: src/test.cpp
   checksum: 0873bd05be90e8de4293a45092f1bf109f39f88028b2bfa160a65fe68272ed9f
 - filename: src/main.cpp
-  checksum: 8a027e3c59f84e3fd4a21e43111ddddfee3a99897e0e7a1ca4640a1045391300
+  checksum: f0c159e26f770b61f3e9dfacb681b16c7c3faef24d1fb9eeb7d703d1b72486a2
+- filename: src/mpris.h
+  checksum: 684b93497a58388b444674fcac41fe3b10f980c68cf10bd9f71c5b4927d4e51b
+- filename: src/views.cpp
+  checksum: 9b21f6a538a386ec8e1d382287bf264e3577977d5064dbc81aeec75ad869f40d
 version: "1.0"

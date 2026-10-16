@@ -1,6 +1,8 @@
 #include "api.h"
+#include "mpris.h"
 #include "ui.h"
 #include "util.h"
+#include "views.h"
 #include <QtNetwork>
 #include <QtWidgets>
 #include <csignal>
@@ -17,7 +19,7 @@ static QString encodedUris(const QStringList &uris) {
     for (const auto &u : uris) out << QString::fromLatin1(QUrl::toPercentEncoding(u));
     return out.join(',');
 }
-enum Kind { AlbumsPage = 1, LikedSongs, Playlist };
+enum Kind { AlbumsPage = 1, LikedSongs, Playlist, HomePage };
 
 // Web API device "type" → the icon Spotify's picker shows for it.
 static Glyph deviceGlyph(const QString &type) {
@@ -26,6 +28,17 @@ static Glyph deviceGlyph(const QString &type) {
     return Glyph::Speaker;
 }
 enum Col { Num, Title, Artist, AlbumCol, Time };
+
+// A frame that runs a callback when clicked: Home's shortcut tiles.
+class Clickable : public QFrame {
+public:
+    std::function<void()> onClick;
+
+protected:
+    void mouseReleaseEvent(QMouseEvent *e) override {
+        if (rect().contains(e->position().toPoint()) && onClick) onClick();
+    }
+};
 
 struct ListInfo {
     QString kind, title, meta, coverUrl, path, context;
@@ -45,6 +58,8 @@ public:
         pages->addWidget(buildAlbumsPage());
         pages->addWidget(buildListPage());
         pages->addWidget(buildLyricsPage());
+        pages->addWidget(buildHomePage());
+        pages->addWidget(buildArtistPage());
         connect(pages, &QStackedWidget::currentChanged, this, [this] {
             bool on = pages->currentWidget() == lyricsPage;
             lyricsButton->setIcon(glyphIcon(Glyph::Mic, on ? theme::green : theme::white, 20));
@@ -85,13 +100,14 @@ public:
         connect(&pollTimer, &QTimer::timeout, this, &Window::poll);
         connect(&tick, &QTimer::timeout, this, &Window::advanceProgress);
         tick.start(200);
-        new QShortcut(QKeySequence("Ctrl+Space"), this, [this] { playPause->click(); });
-        new QShortcut(QKeySequence("Ctrl+L"), this, [this] { search->setFocus(); search->selectAll(); });
+        buildShortcuts();
+        wireMpris();
         sinceProgress.start();
         setPlaying(false);
         nav->setFocus();  // otherwise search grabs focus and shows its ring on launch
         showIdle();
         tintPanel({});
+        updateHistoryButtons();
     }
 
     ~Window() override {
@@ -162,11 +178,59 @@ private:
         brand->addWidget(mark);
         brand->addWidget(label("ignify", "brand"));
         brand->addStretch();
+        backButton = iconButton(Glyph::Back, 18, "Go back (Alt+Left)");
+        forwardButton = iconButton(Glyph::Forward, 18, "Go forward (Alt+Right)");
+        brand->addWidget(backButton);
+        brand->addWidget(forwardButton);
+        connect(backButton, &QToolButton::clicked, this, [this] { stepHistory(-1); });
+        connect(forwardButton, &QToolButton::clicked, this, [this] { stepHistory(1); });
         layout->addLayout(brand);
         layout->addWidget(search);
-        layout->addWidget(nav, 1);
 
-        Glyph grid = Glyph::Grid, heart = Glyph::Heart;
+        // Spotify's "Your Library" header: filter, sort and create.
+        auto *libRow = new QHBoxLayout;
+        libRow->setContentsMargins(6, 4, 0, 0);
+        libRow->setSpacing(2);
+        libRow->addWidget(label("Your Library", "artistName"));
+        libRow->addStretch();
+        auto *filterButton = iconButton(Glyph::Search, 16, "Search in Your Library");
+        sortButton = iconButton(Glyph::Sort, 16, "Sort: Recents");
+        auto *createButton = iconButton(Glyph::Plus, 18, "Create playlist (Ctrl+N)");
+        libRow->addWidget(filterButton);
+        libRow->addWidget(sortButton);
+        libRow->addWidget(createButton);
+        layout->addLayout(libRow);
+        libFilter = new QLineEdit;
+        libFilter->setObjectName("libFilter");
+        libFilter->setPlaceholderText("Search in Your Library");
+        libFilter->setClearButtonEnabled(true);
+        libFilter->hide();
+        layout->addWidget(libFilter);
+        layout->addWidget(nav, 1);
+        connect(filterButton, &QToolButton::clicked, this, [this] {
+            libFilter->setVisible(!libFilter->isVisible());
+            if (libFilter->isVisible()) libFilter->setFocus();
+            else libFilter->clear();
+        });
+        connect(libFilter, &QLineEdit::textChanged, this, &Window::applyLibraryView);
+        connect(sortButton, &QToolButton::clicked, this, [this] {
+            QMenu menu(this);
+            for (auto [key, text] : {std::pair{"recents", "Recents"}, {"alpha", "Alphabetical"}, {"creator", "Creator"}}) {
+                auto *a = menu.addAction(text);
+                a->setCheckable(true);
+                a->setChecked(librarySort == key);
+                connect(a, &QAction::triggered, this, [this, key = QString(key), text = QString(text)] {
+                    librarySort = key;
+                    sortButton->setToolTip("Sort: " + text);
+                    applyLibraryView();
+                });
+            }
+            menu.exec(sortButton->mapToGlobal(QPoint(0, sortButton->height())));
+        });
+        connect(createButton, &QToolButton::clicked, this, [this] { createPlaylist({}); });
+
+        Glyph grid = Glyph::Grid, heart = Glyph::Heart, home = Glyph::Home;
+        navItem("Home", HomePage, tile(40, 4, dpr(), theme::highlight, theme::white, &home));
         navItem("Albums", AlbumsPage, tile(40, 4, dpr(), theme::highlight, theme::white, &grid));
         navItem("Liked Songs", LikedSongs, tile(40, 4, dpr(), likedFrom, theme::white, &heart, likedTo));
         auto *section = new QListWidgetItem("Playlists", nav);
@@ -179,7 +243,7 @@ private:
         section->setFont(small);
 
         connect(search, &QLineEdit::returnPressed, this, [this] { runSearch(search->text().trimmed()); });
-        connect(nav, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *it) { if (it) openNav(it); });
+        connect(nav, &QListWidget::currentItemChanged, this, [this](QListWidgetItem *it) { if (it) go(navView(it)); });
         // Double-click plays a playlist outright, the way into ones Spotify won't list.
         connect(nav, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *it) {
             if (auto ctx = it->data(Role::Uri).toString(); !ctx.isEmpty()) play({{"context_uri", ctx}});
@@ -211,8 +275,37 @@ private:
         grid->viewport()->setAttribute(Qt::WA_Hover);
         layout->addWidget(label("Albums", "h1"));
         layout->addWidget(albumsMeta);
-        layout->addSpacing(14);
+        layout->addSpacing(10);
+        auto *tools = new QHBoxLayout;
+        albumFilter = new QLineEdit;
+        albumFilter->setObjectName("libFilter");
+        albumFilter->setPlaceholderText("Filter albums");
+        albumFilter->setClearButtonEnabled(true);
+        albumFilter->setFixedWidth(240);
+        albumSortButton = new QPushButton("Recently added");
+        albumSortButton->setObjectName("ghost");
+        tools->addWidget(albumFilter);
+        tools->addStretch();
+        tools->addWidget(albumSortButton);
+        tools->addSpacing(16);
+        layout->addLayout(tools);
+        layout->addSpacing(6);
         layout->addWidget(grid, 1);
+        connect(albumFilter, &QLineEdit::textChanged, this, &Window::applyAlbumView);
+        connect(albumSortButton, &QPushButton::clicked, this, [this] {
+            QMenu menu(this);
+            for (auto [key, text] : {std::pair{"recent", "Recently added"}, {"alpha", "Alphabetical"}, {"artist", "Artist"}}) {
+                auto *a = menu.addAction(text);
+                a->setCheckable(true);
+                a->setChecked(albumSort == key);
+                connect(a, &QAction::triggered, this, [this, key = QString(key), text = QString(text)] {
+                    albumSort = key;
+                    albumSortButton->setText(text);
+                    applyAlbumView();
+                });
+            }
+            menu.exec(albumSortButton->mapToGlobal(QPoint(0, albumSortButton->height())));
+        });
         // Covers load as they scroll near the view and are dropped two screens away (syncGridCovers).
         connect(grid->verticalScrollBar(), &QScrollBar::valueChanged, this, &Window::syncGridCovers);
         connect(grid->verticalScrollBar(), &QScrollBar::rangeChanged, this, &Window::syncGridCovers);
@@ -236,6 +329,7 @@ private:
         headTitle->setWordWrap(true);
         headMeta = label({}, "muted");
         headMeta->setWordWrap(true);
+        connect(headMeta, &QLabel::linkActivated, this, &Window::openLink);
         headPlay = new QToolButton;
         headPlay->setObjectName("bigPlay");
         headPlay->setIcon(glyphIcon(Glyph::Play, theme::base, 26));
@@ -263,7 +357,15 @@ private:
         tracks->setMouseTracking(true);
         tracks->setSelectionMode(QAbstractItemView::ExtendedSelection);  // shift/ctrl-click several songs
         tracks->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(tracks, &QWidget::customContextMenuRequested, this, &Window::showTrackMenu);
+        connect(tracks, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+            QStringList songs;
+            for (auto *it : tracks->selectedItems()) songs << uris.value(tracks->indexOfTopLevelItem(it));
+            trackMenu(songs, tracks->viewport()->mapToGlobal(pos));
+        });
+        // Clicking an artist name opens their page, as in Spotify.
+        connect(tracks, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *it, int column) {
+            if (column == Artist) openArtistOf(it->data(Artist, Role::Json).toJsonArray(), QCursor::pos());
+        });
         auto *h = tracks->header();
         h->setStretchLastSection(false);
         h->setSectionResizeMode(QHeaderView::Stretch);
@@ -291,7 +393,11 @@ private:
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         auto *outer = new QVBoxLayout(panel);
         outer->setContentsMargins(0, 0, 0, 0);
-        outer->addWidget(scroll);
+        sideStack = new QStackedWidget;  // Spotify swaps the right panel between now playing and the queue
+        sideStack->setObjectName("sideStack");
+        sideStack->addWidget(scroll);
+        sideStack->addWidget(buildQueuePanel());
+        outer->addWidget(sideStack);
         auto *content = new QWidget;
         scroll->setWidget(content);
         auto *layout = new QVBoxLayout(content);
@@ -303,6 +409,9 @@ private:
         npTitle->setWordWrap(true);
         npArtist = label({}, "npArtist");
         npArtist->setWordWrap(true);
+        npArtist->setTextFormat(Qt::RichText);  // artist links, names escaped by artistLinks()
+        npArtist->setTextInteractionFlags(Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard);
+        connect(npArtist, &QLabel::linkActivated, this, &Window::openLink);
         npAlbum = label({}, "muted");
         npAlbum->setWordWrap(true);
         npAlbum->setToolTip("Open album");
@@ -338,6 +447,9 @@ private:
         badge->adjustSize();
         badge->move(12, 12);
         artistName = label({}, "artistName");
+        artistName->setTextFormat(Qt::RichText);  // links to the artist page; name escaped
+        artistName->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        connect(artistName, &QLabel::linkActivated, this, &Window::openLink);
         artistGenres = label({}, "muted");
         artistBio = label({}, "muted");
         artistBio->setWordWrap(true);
@@ -381,17 +493,20 @@ private:
         auto *bar = new QWidget;
         bar->setObjectName("bar");
         bar->setFixedHeight(88);
-        auto *prev = iconButton(Glyph::Prev, 20, "Previous");
-        auto *next = iconButton(Glyph::Next, 20, "Next");
+        auto *prev = prevButton = iconButton(Glyph::Prev, 20, "Previous (Ctrl+Left)");
+        auto *next = nextButton = iconButton(Glyph::Next, 20, "Next (Ctrl+Right)");
+        shuffleButton = new QToolButton;
+        repeatButton = new QToolButton;
+        for (auto *b : {shuffleButton, repeatButton}) b->setIconSize({20, 26});
         playPause = new QToolButton;
         playPause->setObjectName("play");
         playPause->setFixedSize(40, 40);
         playPause->setIconSize({20, 20});
-        playPause->setToolTip("Play or pause (Ctrl+Space)");
+        playPause->setToolTip("Play or pause (Space)");
         seek = new QSlider(Qt::Horizontal);
         volume = new QSlider(Qt::Horizontal);
         volume->setRange(0, 100);
-        volume->setFixedWidth(110);
+        volume->setFixedWidth(90);
         volume->setToolTip("Volume");
         elapsed = label("0:00", "muted");
         total = label("0:00", "muted");
@@ -400,8 +515,19 @@ private:
         barTrack = new QLabel;
         barTrack->setTextFormat(Qt::RichText);  // bold title + grey artist, both escaped in showTrack
         barTrack->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        barTrack->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        connect(barTrack, &QLabel::linkActivated, this, &Window::openLink);
         devicesButton = iconButton(Glyph::Devices, 20, "Connect to a device");
         lyricsButton = iconButton(Glyph::Mic, 20, "Lyrics");
+        queueButton = new QToolButton;
+        queueButton->setIconSize({20, 26});
+        queueButton->setIcon(toggleIcon(Glyph::Queue, false, 20));
+        queueButton->setToolTip("Queue");
+        miniButton = new QToolButton;
+        miniButton->setIconSize({18, 24});
+        miniButton->setIcon(toggleIcon(Glyph::MiniPlayer, false, 18));
+        miniButton->setToolTip("Open mini player (Ctrl+M)");
+        fullButton = iconButton(Glyph::FullScreen, 18, "Full screen (F11)");
         likeButton = iconButton(Glyph::HeartOutline, 18, "Save to your Liked Songs");
         addButton = iconButton(Glyph::Plus, 18, "Add to playlist");
         auto *speaker = new QLabel;
@@ -410,9 +536,11 @@ private:
         auto *buttons = new QHBoxLayout;
         buttons->setSpacing(14);
         buttons->addStretch();
+        buttons->addWidget(shuffleButton);
         buttons->addWidget(prev);
         buttons->addWidget(playPause);
         buttons->addWidget(next);
+        buttons->addWidget(repeatButton);
         buttons->addStretch();
         auto *progress = new QHBoxLayout;
         progress->addWidget(elapsed);
@@ -436,11 +564,16 @@ private:
         auto *r = new QHBoxLayout(right);
         r->setContentsMargins(0, 0, 0, 0);
         r->addStretch();
+        r->setSpacing(2);
         r->addWidget(lyricsButton);
+        r->addWidget(queueButton);
         r->addWidget(devicesButton);
         r->addSpacing(4);
         r->addWidget(speaker);
         r->addWidget(volume);
+        r->addSpacing(6);
+        r->addWidget(miniButton);
+        r->addWidget(fullButton);
 
         auto *layout = new QHBoxLayout(bar);
         layout->setContentsMargins(20, 8, 20, 10);
@@ -454,6 +587,12 @@ private:
             setPlaying(!playing);  // optimistic; the next poll corrects it
         });
         connect(devicesButton, &QToolButton::clicked, this, &Window::showDevices);
+        connect(shuffleButton, &QToolButton::clicked, this, [this] { setShuffle(!shuffleOn); });
+        connect(repeatButton, &QToolButton::clicked, this, [this] { setRepeat(nextRepeat(repeatState)); });
+        connect(queueButton, &QToolButton::clicked, this, [this] { toggleQueue(sideStack->currentIndex() == 0); });
+        connect(miniButton, &QToolButton::clicked, this, &Window::toggleMini);
+        connect(fullButton, &QToolButton::clicked, this, &Window::toggleFull);
+        updateModeButtons();
         connect(lyricsButton, &QToolButton::clicked, this, [this] {
             if (pages->currentWidget() == lyricsPage) return pages->setCurrentIndex(pageBeforeLyrics);
             pageBeforeLyrics = pages->currentIndex();
@@ -466,8 +605,7 @@ private:
         connect(prev, &QToolButton::clicked, this, [this] { api->send("POST", "/me/player/previous", {}, pollSoon()); });
         connect(next, &QToolButton::clicked, this, [this] { api->send("POST", "/me/player/next", {}, pollSoon()); });
         connect(seek, &QSlider::sliderReleased, this, [this] { seekTo(seek->value()); });
-        connect(volume, &QSlider::sliderReleased, this,
-                [this] { api->send("PUT", QString("/me/player/volume?volume_percent=%1").arg(volume->value())); });
+        connect(volume, &QSlider::sliderReleased, this, [this] { setVolumePercent(volume->value()); });
         return bar;
     }
 
@@ -480,20 +618,27 @@ private:
                 auto *it = navItem(pl["name"].toString(), Playlist, tile(40, 4, dpr(), theme::highlight));
                 it->setData(Role::Uri, pl["uri"].toString());
                 it->setData(Role::Json, pl);
+                it->setData(Role::Order, playlistOrder++);  // API order = Spotify's "Recents"
                 setIconAsync(nav, it, imageUrl(pl["images"].toArray(), 80), 40, 4);
             }
+            applyLibraryView();
             return true;
         });
     }
 
-    // Sets an item's picture once it downloads; the persistent index goes invalid if the row is gone.
+    // Sets an item's picture once it downloads. Rows can be re-ordered meanwhile (library sort and
+    // filter take them out and put them back), which invalidates the index: then the row is found
+    // again by the URL it carries. A row that is gone for good simply isn't found.
     void setIconAsync(QListWidget *list, QListWidgetItem *it, const QString &url, int size, qreal radius) {
+        it->setData(Role::Image, url);
         QPersistentModelIndex idx = list->model()->index(list->row(it), 0);
         bool asIcon = list == nav;
-        covers.load(url, this, [=](const QPixmap &pm) {
-            if (!idx.isValid()) return;
+        covers.load(url, list, [=](const QPixmap &pm) {
             auto r = rounded(pm, size, radius, dpr());
-            list->model()->setData(idx, asIcon ? QVariant(QIcon(r)) : QVariant(r), Qt::DecorationRole);
+            QVariant picture = asIcon ? QVariant(QIcon(r)) : QVariant(r);
+            if (idx.isValid()) return void(list->model()->setData(idx, picture, Qt::DecorationRole));
+            for (int i = 0; i < list->count(); ++i)
+                if (list->item(i)->data(Role::Image).toString() == url) list->item(i)->setData(Qt::DecorationRole, picture);
         });
     }
 
@@ -509,8 +654,9 @@ private:
                 it->setData(Role::Subtitle, joinNames(a["artists"].toArray()));
                 it->setData(Role::Json, a);
                 it->setData(Role::Image, imageUrl(a["images"].toArray(), CardDelegate::Cover * dpr()));
+                it->setData(Role::Order, grid->count());
             }
-            QTimer::singleShot(0, this, &Window::syncGridCovers);
+            applyAlbumView();
             return true;
         });
     }
@@ -533,9 +679,20 @@ private:
         }
     }
 
-    void openNav(QListWidgetItem *it) {
+    std::function<void()> navView(QListWidgetItem *it) {
+        int kind = it->data(Role::Kind).toInt();
+        QJsonObject pl = it->data(Role::Json).toJsonObject();
+        return [this, kind, pl] { showNav(kind, pl); };
+    }
+
+    void showNav(int kind, const QJsonObject &pl) {
+        selectNav(kind, pl["id"].toString());
         Glyph heart = Glyph::Heart;
-        switch (it->data(Role::Kind).toInt()) {
+        switch (kind) {
+        case HomePage:
+            pages->setCurrentWidget(homePage);
+            if (!homeLoadedAt.isValid() || homeLoadedAt.elapsed() > 120'000) loadHome();
+            break;
         case AlbumsPage:
             pages->setCurrentIndex(0);
             if (!albumsLoaded) loadAlbums();
@@ -545,7 +702,6 @@ private:
                       tile(184, 8, dpr(), likedFrom, theme::white, &heart, likedTo)});
             break;
         case Playlist: {
-            const auto pl = it->data(Role::Json).toJsonObject();
             const auto owner = pl["owner"].toObject();
             // 2026 API: the track count moved from "tracks" to "items".
             int n = (pl.contains("items") ? pl["items"] : pl["tracks"]).toObject()["total"].toInt();
@@ -561,19 +717,26 @@ private:
     }
 
     void openAlbum(const QJsonObject &a) {
-        if (a.isEmpty()) return;
-        nav->setCurrentItem(nullptr);
+        if (!a.isEmpty()) go([this, a] { showAlbum(a); });
+    }
+
+    void showAlbum(const QJsonObject &a) {
+        selectNav(0, {});
         int n = a["total_tracks"].toInt();
-        QString meta = QString("%1, %2, %3 songs")
-                           .arg(joinNames(a["artists"].toArray()), a["release_date"].toString().left(4),
-                                QString::number(n));
-        openList({"Album", a["name"].toString(), meta, imageUrl(a["images"].toArray(), 368),
+        openList({"Album", a["name"].toString(), {}, imageUrl(a["images"].toArray(), 368),
                   "/albums/" + a["id"].toString() + "/tracks?limit=50", a["uri"].toString(), {}, true});
+        // Artist names in the header link to their pages; everything else is escaped text.
+        headMeta->setTextFormat(Qt::RichText);
+        headMeta->setText(artistLinks(a["artists"].toArray(), "#B3B3B3") + ", " +
+                          a["release_date"].toString().left(4).toHtmlEscaped() + QString(", %1 songs").arg(n));
     }
 
     void runSearch(const QString &q) {
-        if (q.isEmpty()) return;
-        nav->setCurrentItem(nullptr);
+        if (!q.isEmpty()) go([this, q] { showSearch(q); });
+    }
+
+    void showSearch(const QString &q) {
+        selectNav(0, {});
         openList({"Search", "“" + q + "”", {}, {}, {}, {}});
         headCover->hide();
         int gen = loadGen;
@@ -597,6 +760,7 @@ private:
         tracks->setColumnHidden(AlbumCol, info.albumView);
         headKind->setText(info.kind);
         headTitle->setText(info.title);
+        headMeta->setTextFormat(Qt::PlainText);
         headMeta->setText(info.meta);
         headCover->show();
         headCover->setPixmap(info.fallback.isNull() ? tile(184, 8, dpr(), theme::highlight) : info.fallback);
@@ -624,6 +788,7 @@ private:
             auto *row = new QTreeWidgetItem({QString::number(uris.size() + 1), t["name"].toString(),
                                              joinNames(t["artists"].toArray()), album.isEmpty() ? albumName : album,
                                              formatTime(t["duration_ms"].toInteger())});
+            row->setData(Artist, Role::Json, t["artists"].toArray());  // for the clickable artist column
             for (int c : {Num, Artist, AlbumCol, Time}) row->setForeground(c, theme::subdued);
             row->setTextAlignment(Num, Qt::AlignCenter);
             row->setTextAlignment(Time, Qt::AlignRight | Qt::AlignVCenter);
@@ -655,6 +820,11 @@ private:
         progressAt = ms;
         sinceProgress.restart();
         api->send("PUT", QString("/me/player/seek?position_ms=%1").arg(ms));
+        mpris->seeked(ms * 1000);
+    }
+
+    qint64 positionMs() const {
+        return std::min<qint64>(progressAt + (playing ? sinceProgress.elapsed() : 0), seek->maximum());
     }
 
     Api::Callback pollSoon() {
@@ -662,8 +832,10 @@ private:
     }
 
     void setPlaying(bool on) {
+        if (playing == on && !playPause->icon().isNull()) return;
         playing = on;
         playPause->setIcon(glyphIcon(on ? Glyph::Pause : Glyph::Play, theme::base, 20));
+        pushNowPlaying();
     }
 
     void poll() {
@@ -677,6 +849,15 @@ private:
             connectBar->setVisible(remote);
             devicesButton->setIcon(glyphIcon(Glyph::Devices, remote ? theme::green : theme::white, 20));
             volume->setEnabled(dev["supports_volume"].toBool(true));  // some phones refuse remote volume
+            bool shuffle = p["shuffle_state"].toBool();
+            QString repeat = p["repeat_state"].toString("off");
+            if (shuffle != shuffleOn || repeat != repeatState) {
+                shuffleOn = shuffle;
+                repeatState = repeat;
+                updateModeButtons();
+            }
+            QString ctx = p["context"].toObject()["uri"].toString();
+            if (ctx != nowContextUri) resolveContext(ctx);
             auto item = p["item"].toObject();
             if (item.isEmpty()) return showIdle();
             if (item["uri"].toString() != nowUri) showTrack(item);
@@ -686,14 +867,16 @@ private:
             sinceProgress.restart();
             advanceProgress();
             if (!volume->isSliderDown()) volume->setValue(dev["volume_percent"].toInt());
+            pushMpris();
         });
     }
 
     void advanceProgress() {
         if (seek->isSliderDown()) return elapsed->setText(formatTime(seek->value()));
-        qint64 pos = std::min<qint64>(progressAt + (playing ? sinceProgress.elapsed() : 0), seek->maximum());
+        qint64 pos = positionMs();
         seek->setValue(pos);
         elapsed->setText(formatTime(pos));
+        if (pos / 1000 != pushedSecond) pushNowPlaying();  // mini player / full screen: once a second
         if (pages->currentWidget() == lyricsPage && !lyrics.isEmpty()) followLyrics(pos);
     }
 
@@ -708,11 +891,11 @@ private:
         checkLiked();
         loadArtist(item);
         if (pages->currentWidget() == lyricsPage) loadLyrics();
+        if (sideStack->currentIndex() == 1) loadQueue();
         npTitle->setText(item["name"].toString());
-        barTrack->setText(QString("<b>%1</b><br><span style=\"color:#B3B3B3\">%2</span>")
-                              .arg(item["name"].toString().toHtmlEscaped(),
-                                   joinNames(item["artists"].toArray()).toHtmlEscaped()));
-        npArtist->setText(joinNames(item["artists"].toArray()));
+        barTrack->setText(QString("<b>%1</b><br>").arg(item["name"].toString().toHtmlEscaped()) +
+                          artistLinks(item["artists"].toArray(), "#B3B3B3"));
+        npArtist->setText(artistLinks(item["artists"].toArray(), "#B3B3B3"));
         npAlbum->setText(nowAlbum.isEmpty() ? QString()
                                             : "<a href=\"#\" style=\"color:#B3B3B3;text-decoration:none\">" +
                                                   nowAlbum["name"].toString().toHtmlEscaped() + "</a>");
@@ -722,8 +905,13 @@ private:
             if (url != nowCoverUrl) return;  // skipped ahead meanwhile
             npCover->setPixmap(rounded(pm, 268, 10, dpr()));
             barCover->setPixmap(rounded(pm, 56, 4, dpr()));
-            tintPanel(moodColor(pm));
+            nowCover = pm;
+            nowMood = moodColor(pm);
+            tintPanel(nowMood);
+            pushNowPlaying();
         });
+        if (full && full->isVisible()) loadBigCover();
+        pushMpris();
     }
 
     void showIdle() {
@@ -745,6 +933,10 @@ private:
             addButton->hide();
             seek->setMaximum(0);
             total->setText("0:00");
+            nowCover = {};
+            nowMood = {};
+            pushNowPlaying();
+            pushMpris();
         }
     }
 
@@ -901,13 +1093,23 @@ private:
         });
         auto *done = new QPushButton("Done");
         done->setObjectName("done");
+        auto *create = new QPushButton("New playlist");
+        create->setObjectName("ghost");
+        connect(create, &QPushButton::clicked, menu, [this, menu, songs] {
+            menu->close();
+            createPlaylist(songs);
+        });
         if (list->count() == 0) {
             list->hide();
             v->addWidget(label("You don't have a playlist you can add to yet.", "muted"));
         } else {
             v->addWidget(list);
         }
-        v->addWidget(done, 0, Qt::AlignRight);
+        auto *buttons = new QHBoxLayout;
+        buttons->addWidget(create);
+        buttons->addStretch();
+        buttons->addWidget(done);
+        v->addLayout(buttons);
         auto *action = new QWidgetAction(menu);
         action->setDefaultWidget(box);
         menu->addAction(action);
@@ -929,12 +1131,10 @@ private:
         menu->popup(above ? at - QPoint(0, menu->sizeHint().height()) : at);
     }
 
-    void showTrackMenu(const QPoint &pos) {
-        QStringList songs;
-        for (auto *it : tracks->selectedItems()) songs << uris.value(tracks->indexOfTopLevelItem(it));
+    // Right-click menu for one or several songs (track lists, artist page).
+    void trackMenu(QStringList songs, const QPoint &at) {
         songs.removeAll(QString());
         if (songs.isEmpty()) return;
-        QPoint at = tracks->viewport()->mapToGlobal(pos);
         // contains takes 40 URIs; a bigger selection is judged on its first 40
         api->get("/me/library/contains?uris=" + encodedUris(songs.mid(0, 40)), [this, songs, at](const QJsonObject &o) {
             bool allLiked = true;
@@ -947,6 +1147,12 @@ private:
             auto *like = menu->addAction(glyphIcon(allLiked ? Glyph::Heart : Glyph::HeartOutline, allLiked ? theme::green : theme::white, 18),
                                          allLiked ? "Remove from your Liked Songs" : "Save to your Liked Songs");
             connect(like, &QAction::triggered, this, [this, songs, allLiked] { setLiked(songs, !allLiked); });
+            auto *queue = menu->addAction(glyphIcon(Glyph::Queue, theme::white, 18), "Add to queue");
+            connect(queue, &QAction::triggered, this, [this, songs] {
+                queueSongs(songs, 0);
+                statusBar()->showMessage(songs.size() == 1 ? QString("Added to queue")
+                                                           : QString("Added %1 songs to queue").arg(songs.size()), 3000);
+            });
             menu->popup(at);
         });
     }
@@ -1090,11 +1296,807 @@ private:
     }
 
     bool eventFilter(QObject *o, QEvent *e) override {
+        // Pages are built one after another; a resize can arrive before the last grid exists.
+        if (e->type() == QEvent::Resize && artistAlbums && (o == homePage->viewport() || o == artistPage->viewport())) {
+            QTimer::singleShot(0, this, [this] {
+                for (auto *g : {homeArtists, homeSongs, artistAlbums}) fitGrid(g);
+            });
+        }
         if (e->type() == QEvent::MouseButtonRelease && o->property("ms").isValid()) {
             seekTo(o->property("ms").toLongLong());
             return true;
         }
         return QMainWindow::eventFilter(o, e);
+    }
+
+    // ---- history (back / forward) -------------------------------------------------
+    // Every navigation is recorded as "how to show this page"; back/forward replay those.
+
+    void go(std::function<void()> view) {
+        if (histPos + 1 < history.size()) history.erase(history.begin() + histPos + 1, history.end());
+        history << std::move(view);
+        if (history.size() > 50) history.removeFirst();  // ponytail: 50 steps back is plenty
+        histPos = int(history.size()) - 1;
+        history[histPos]();
+        updateHistoryButtons();
+    }
+
+    void stepHistory(int step) {
+        int to = histPos + step;
+        if (to < 0 || to >= history.size()) return;
+        histPos = to;
+        history[histPos]();
+        updateHistoryButtons();
+    }
+
+    void updateHistoryButtons() {
+        backButton->setEnabled(histPos > 0);
+        forwardButton->setEnabled(histPos + 1 < history.size());
+        backButton->setIcon(glyphIcon(Glyph::Back, histPos > 0 ? theme::white : QColor("#535353"), 18));
+        forwardButton->setIcon(glyphIcon(Glyph::Forward, histPos + 1 < history.size() ? theme::white : QColor("#535353"), 18));
+    }
+
+    // Highlight the sidebar row for the page being shown (kind 0 = none) without re-navigating.
+    void selectNav(int kind, const QString &playlistId) {
+        QSignalBlocker quiet(nav);
+        nav->clearSelection();
+        nav->setCurrentItem(nullptr);
+        for (int i = 0; kind && i < nav->count(); ++i) {
+            auto *it = nav->item(i);
+            if (it->data(Role::Kind).toInt() == kind &&
+                (kind != Playlist || it->data(Role::Json).toJsonObject()["id"].toString() == playlistId)) {
+                nav->setCurrentItem(it);
+                break;
+            }
+        }
+    }
+
+    void goNav(Kind kind) {
+        for (int i = 0; i < nav->count(); ++i)
+            if (nav->item(i)->data(Role::Kind).toInt() == kind) return go(navView(nav->item(i)));
+    }
+
+    // ---- library sort / filter ----------------------------------------------------
+
+    // Reorders the playlist rows under the "Playlists" header and hides ones the filter rules out.
+    void applyLibraryView() {
+        QSignalBlocker quiet(nav);  // moving the current row must not count as a click
+        QString currentId = nav->currentItem() ? nav->currentItem()->data(Role::Json).toJsonObject()["id"].toString() : QString();
+        QList<QListWidgetItem *> rows;
+        for (int i = nav->count() - 1; i >= 0; --i)
+            if (nav->item(i)->data(Role::Kind).toInt() == Playlist) rows.prepend(nav->takeItem(i));
+        auto owner = [](QListWidgetItem *it) { return it->data(Role::Json).toJsonObject()["owner"].toObject()["display_name"].toString(); };
+        std::stable_sort(rows.begin(), rows.end(), [&](QListWidgetItem *a, QListWidgetItem *b) {
+            if (librarySort == "alpha") return a->text().localeAwareCompare(b->text()) < 0;
+            if (librarySort == "creator") {
+                int c = owner(a).localeAwareCompare(owner(b));
+                return c ? c < 0 : a->text().localeAwareCompare(b->text()) < 0;
+            }
+            return a->data(Role::Order).toInt() < b->data(Role::Order).toInt();
+        });
+        QString filter = libFilter->text().trimmed();
+        for (auto *it : rows) {
+            nav->addItem(it);
+            it->setHidden(!filter.isEmpty() && !it->text().contains(filter, Qt::CaseInsensitive));
+            if (!currentId.isEmpty() && it->data(Role::Json).toJsonObject()["id"].toString() == currentId) nav->setCurrentItem(it);
+        }
+    }
+
+    void applyAlbumView() {
+        QList<QListWidgetItem *> items;
+        while (grid->count()) items << grid->takeItem(0);
+        std::stable_sort(items.begin(), items.end(), [this](QListWidgetItem *a, QListWidgetItem *b) {
+            if (albumSort == "alpha") return a->text().localeAwareCompare(b->text()) < 0;
+            if (albumSort == "artist") {
+                int c = a->data(Role::Subtitle).toString().localeAwareCompare(b->data(Role::Subtitle).toString());
+                return c ? c < 0 : a->text().localeAwareCompare(b->text()) < 0;
+            }
+            return a->data(Role::Order).toInt() < b->data(Role::Order).toInt();
+        });
+        QString filter = albumFilter->text().trimmed();
+        for (auto *it : items) {
+            grid->addItem(it);
+            it->setHidden(!filter.isEmpty() && !it->text().contains(filter, Qt::CaseInsensitive) &&
+                          !it->data(Role::Subtitle).toString().contains(filter, Qt::CaseInsensitive));
+        }
+        QTimer::singleShot(0, this, &Window::syncGridCovers);
+    }
+
+    void createPlaylist(const QStringList &songs) {
+        bool ok;
+        QString name = QInputDialog::getText(this, "Create playlist", "Name", QLineEdit::Normal,
+                                             QString("My Playlist #%1").arg(playlistOrder + 1), &ok).trimmed();
+        if (!ok || name.isEmpty()) return;
+        api->send("POST", "/me/playlists", {{"name", name}, {"public", false}}, [this, songs, name](const QJsonObject &created) {
+            QJsonObject pl = created;
+            if (!pl.contains("uri")) pl["uri"] = "spotify:playlist:" + pl["id"].toString();
+            auto *it = new QListWidgetItem(QIcon(tile(40, 4, dpr(), theme::highlight)), pl["name"].toString(name));
+            it->setData(Role::Kind, Playlist);
+            it->setData(Role::Uri, pl["uri"].toString());
+            it->setData(Role::Json, pl);
+            it->setData(Role::Order, -(++createdCount));  // newest first under Recents, like Spotify
+            nav->addItem(it);
+            applyLibraryView();
+            if (!songs.isEmpty()) {
+                for (int k = 0; k < songs.size(); k += 100)
+                    api->send("POST", "/playlists/" + pl["id"].toString() + "/items",
+                              {{"uris", QJsonArray::fromStringList(songs.mid(k, 100))}});
+                statusBar()->showMessage("Added to " + it->text(), 4000);
+            } else {
+                go(navView(it));
+            }
+        });
+    }
+
+    // ---- home ---------------------------------------------------------------------
+
+    QListWidget *cardGrid(bool round) {
+        auto *g = new QListWidget;
+        g->setViewMode(QListView::IconMode);
+        g->setResizeMode(QListView::Adjust);
+        g->setMovement(QListView::Static);
+        g->setUniformItemSizes(true);
+        g->setGridSize(CardDelegate::cell());
+        g->setItemDelegate(new CardDelegate(g));
+        g->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);  // the page scrolls, not the grid
+        g->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        g->setMouseTracking(true);
+        g->viewport()->setAttribute(Qt::WA_Hover);
+        g->setProperty("round", round);
+        return g;
+    }
+
+    // Grids inside a scrolling page show every row: size them to their content.
+    void fitGrid(QListWidget *g) {
+        int visible = 0;
+        for (int i = 0; i < g->count(); ++i) visible += !g->item(i)->isHidden();
+        int perRow = std::max(1, g->viewport()->width() / CardDelegate::cell().width());
+        int rows = (visible + perRow - 1) / perRow;
+        g->setFixedHeight(std::max(1, rows) * CardDelegate::cell().height() + 6);
+        g->setVisible(visible > 0);
+    }
+
+    QScrollArea *scrollPage(const char *name, QVBoxLayout *&layout) {
+        auto *page = new QScrollArea;
+        page->setObjectName(name);
+        page->setWidgetResizable(true);
+        page->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *content = new QWidget;
+        layout = new QVBoxLayout(content);
+        layout->setContentsMargins(28, 26, 16, 28);
+        layout->setSpacing(14);
+        page->setWidget(content);
+        page->viewport()->installEventFilter(this);  // re-fit the card grids on resize
+        return page;
+    }
+
+    QWidget *buildHomePage() {
+        QVBoxLayout *layout;
+        homePage = scrollPage("homeScroll", layout);
+        shortcutGrid = new QGridLayout;
+        shortcutGrid->setSpacing(8);
+        layout->addLayout(shortcutGrid);
+        homeEmpty = label("Play a few songs and your recent albums, playlists and top artists show up here.", "muted");
+        homeEmpty->setWordWrap(true);
+        homeEmpty->hide();
+        layout->addWidget(homeEmpty);
+        homeArtistsTitle = label("Your top artists", "section");
+        homeArtists = cardGrid(true);
+        homeSongsTitle = label("Your top songs this month", "section");
+        homeSongs = cardGrid(false);
+        layout->addSpacing(12);
+        layout->addWidget(homeArtistsTitle);
+        layout->addWidget(homeArtists);
+        layout->addWidget(homeSongsTitle);
+        layout->addWidget(homeSongs);
+        layout->addStretch();
+        connect(homeArtists, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) { openArtist(it->data(Role::Id).toString()); });
+        connect(homeSongs, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem *it) { play(playBody({}, homeSongUris, homeSongs->row(it))); });
+        return homePage;
+    }
+
+    void loadHome() {
+        homeLoadedAt.start();
+        int gen = ++homeGen;
+        while (auto *item = shortcutGrid->takeAt(0)) {
+            delete item->widget();
+            delete item;
+        }
+        homeArtists->clear();
+        homeSongs->clear();
+        homeSongUris.clear();
+        homeEmpty->hide();
+        // Spotify's shortcut grid: the albums and playlists you played most recently.
+        api->get("/me/player/recently-played?limit=50", [this, gen](const QJsonObject &o) {
+            if (gen != homeGen) return;
+            QStringList seen;
+            for (const auto &v : o["items"].toArray()) {
+                QString uri = v.toObject()["context"].toObject()["uri"].toString();
+                if (uri.isEmpty() || seen.contains(uri)) continue;
+                seen << uri;
+                addShortcut(uri, int(seen.size()) - 1);
+                if (seen.size() == 8) break;
+            }
+            homeEmpty->setVisible(seen.isEmpty() && homeArtists->count() == 0);
+        });
+        api->get("/me/top/artists?limit=10&time_range=short_term", [this, gen](const QJsonObject &o) {
+            if (gen != homeGen) return;
+            for (const auto &v : o["items"].toArray()) {
+                auto a = v.toObject();
+                auto *it = new QListWidgetItem(a["name"].toString(), homeArtists);
+                it->setData(Role::Subtitle, "Artist");
+                it->setData(Role::Kind, CardDelegate::Round);
+                it->setData(Role::Id, a["id"].toString());
+                setIconAsync(homeArtists, it, imageUrl(a["images"].toArray(), CardDelegate::Cover * dpr()),
+                             CardDelegate::Cover, CardDelegate::Cover / 2.0);
+            }
+            homeArtistsTitle->setVisible(homeArtists->count() > 0);
+            fitGrid(homeArtists);
+        });
+        api->get("/me/top/tracks?limit=10&time_range=short_term", [this, gen](const QJsonObject &o) {
+            if (gen != homeGen) return;
+            for (const auto &v : o["items"].toArray()) {
+                auto t = v.toObject();
+                auto *it = new QListWidgetItem(t["name"].toString(), homeSongs);
+                it->setData(Role::Subtitle, joinNames(t["artists"].toArray()));
+                homeSongUris << t["uri"].toString();
+                setIconAsync(homeSongs, it, imageUrl(t["album"].toObject()["images"].toArray(), CardDelegate::Cover * dpr()),
+                             CardDelegate::Cover, 6);
+            }
+            homeSongsTitle->setVisible(homeSongs->count() > 0);
+            fitGrid(homeSongs);
+        });
+    }
+
+    void addShortcut(const QString &uri, int index) {
+        auto *tileFrame = new Clickable;
+        tileFrame->setObjectName("shortcut");
+        tileFrame->setFixedHeight(56);
+        tileFrame->setCursor(Qt::PointingHandCursor);
+        auto *row = new QHBoxLayout(tileFrame);
+        row->setContentsMargins(0, 0, 10, 0);
+        row->setSpacing(12);
+        auto *cover = new QLabel;
+        cover->setFixedSize(56, 56);
+        cover->setPixmap(tile(56, 4, dpr(), theme::highlight));
+        auto *name = label({}, "shortcutName");
+        name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        row->addWidget(cover);
+        row->addWidget(name, 1);
+        shortcutGrid->addWidget(tileFrame, index / 4, index % 4);
+        QPointer<Clickable> guard(tileFrame);
+        auto fill = [this, guard, cover, name](const QString &title, const QJsonArray &images, std::function<void()> open) {
+            if (!guard) return;
+            name->setText(title);
+            guard->onClick = std::move(open);
+            covers.load(imageUrl(images, 112), guard, [this, cover](const QPixmap &pm) { cover->setPixmap(rounded(pm, 56, 4, dpr())); });
+        };
+        QString id = uri.section(':', 2);
+        if (uri.startsWith("spotify:album:"))
+            api->get("/albums/" + id, [this, fill](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, a] { openAlbum(a); }); });
+        else if (uri.startsWith("spotify:playlist:"))
+            api->get("/playlists/" + id, [this, fill](const QJsonObject &pl) {
+                fill(pl["name"].toString(), pl["images"].toArray(), [this, pl] { go([this, pl] { showNav(Playlist, pl); }); });
+            });
+        else if (uri.startsWith("spotify:artist:"))
+            api->get("/artists/" + id, [this, fill, id](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, id] { openArtist(id); }); });
+        else if (uri.endsWith(":collection")) {
+            Glyph heart = Glyph::Heart;
+            cover->setPixmap(tile(56, 4, dpr(), likedFrom, theme::white, &heart, likedTo));
+            name->setText("Liked Songs");
+            tileFrame->onClick = [this] { goNav(LikedSongs); };
+        }
+    }
+
+    // ---- artist page --------------------------------------------------------------
+
+    QWidget *buildArtistPage() {
+        QVBoxLayout *layout;
+        artistPage = scrollPage("artistScroll", layout);
+        artistAvatar = new QLabel;
+        artistAvatar->setFixedSize(184, 184);
+        artistTitle = label({}, "h1");
+        artistTitle->setWordWrap(true);
+        artistMeta = label({}, "muted");
+        artistPlay = new QToolButton;
+        artistPlay->setObjectName("bigPlay");
+        artistPlay->setIcon(glyphIcon(Glyph::Play, theme::base, 26));
+        artistPlay->setIconSize({26, 26});
+        artistPlay->setFixedSize(54, 54);
+        artistPlay->setToolTip("Play");
+        auto *text = new QVBoxLayout;
+        text->setSpacing(6);
+        text->addStretch();
+        text->addWidget(label("Artist", "kind"));
+        text->addWidget(artistTitle);
+        text->addWidget(artistMeta);
+        text->addSpacing(10);
+        text->addWidget(artistPlay, 0, Qt::AlignLeft);
+        auto *head = new QHBoxLayout;
+        head->setSpacing(24);
+        head->addWidget(artistAvatar, 0, Qt::AlignLeft | Qt::AlignBottom);
+        head->addLayout(text, 1);
+        layout->addLayout(head);
+        layout->addSpacing(10);
+
+        // Spotify shows "Popular" here; its top-tracks endpoint is gone (2026), so these are
+        // the artist's songs from search, honestly labelled.
+        layout->addWidget(label("Songs", "section"));
+        artistSongs = new QTreeWidget;
+        artistSongs->setHeaderLabels({"#", "Title", "Album", "Time"});
+        artistSongs->setRootIsDecorated(false);
+        artistSongs->setUniformRowHeights(true);
+        artistSongs->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        artistSongs->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        artistSongs->setContextMenuPolicy(Qt::CustomContextMenu);
+        auto *h = artistSongs->header();
+        h->setStretchLastSection(false);
+        h->setSectionResizeMode(QHeaderView::Stretch);
+        h->setSectionResizeMode(0, QHeaderView::Fixed);
+        h->setSectionResizeMode(3, QHeaderView::Fixed);
+        h->resizeSection(0, 48);
+        h->resizeSection(3, 64);
+        layout->addWidget(artistSongs);
+        artistMore = new QPushButton("Show more");
+        artistMore->setObjectName("ghost");
+        layout->addWidget(artistMore, 0, Qt::AlignLeft);
+
+        layout->addSpacing(12);
+        layout->addWidget(label("Discography", "section"));
+        auto *chips = new QHBoxLayout;
+        chipAlbums = new QPushButton("Albums");
+        chipSingles = new QPushButton("Singles and EPs");
+        auto *group = new QButtonGroup(this);
+        for (auto *c : {chipAlbums, chipSingles}) {
+            c->setObjectName("chip");
+            c->setCheckable(true);
+            group->addButton(c);
+            chips->addWidget(c);
+        }
+        chipAlbums->setChecked(true);
+        chips->addStretch();
+        layout->addLayout(chips);
+        artistAlbums = cardGrid(false);
+        layout->addWidget(artistAlbums);
+        artistNoAlbums = label({}, "muted");
+        layout->addWidget(artistNoAlbums);
+        layout->addStretch();
+
+        connect(artistPlay, &QToolButton::clicked, this, [this] { play({{"context_uri", "spotify:artist:" + currentArtistId}}); });
+        connect(artistSongs, &QTreeWidget::itemActivated, this,
+                [this](QTreeWidgetItem *it) { play(playBody({}, artistSongUris, artistSongs->indexOfTopLevelItem(it))); });
+        connect(artistSongs, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+            QStringList songs;
+            for (auto *it : artistSongs->selectedItems()) songs << artistSongUris.value(artistSongs->indexOfTopLevelItem(it));
+            trackMenu(songs, artistSongs->viewport()->mapToGlobal(pos));
+        });
+        connect(artistMore, &QPushButton::clicked, this, [this] {
+            artistSongsExpanded = !artistSongsExpanded;
+            showArtistSongs();
+        });
+        connect(group, &QButtonGroup::buttonClicked, this, [this] { filterDiscography(); });
+        connect(artistAlbums, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) { openAlbum(it->data(Role::Json).toJsonObject()); });
+        return artistPage;
+    }
+
+    void openLink(const QString &link) {
+        if (link.startsWith("artist:")) openArtist(link.mid(7));
+        else if (link == "#") openAlbum(nowAlbum);
+    }
+
+    void openArtist(const QString &id) {
+        if (!id.isEmpty()) go([this, id] { showArtist(id); });
+    }
+
+    // One artist opens directly; several get a small menu, since a table cell is one click target.
+    void openArtistOf(const QJsonArray &artists, const QPoint &at) {
+        if (artists.size() == 1) return openArtist(artists.first().toObject()["id"].toString());
+        if (artists.isEmpty()) return;
+        auto *menu = new QMenu(this);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        for (const auto &v : artists) {
+            auto a = v.toObject();
+            connect(menu->addAction(a["name"].toString()), &QAction::triggered, this,
+                    [this, id = a["id"].toString()] { openArtist(id); });
+        }
+        menu->popup(at);
+    }
+
+    void showArtist(const QString &id) {
+        selectNav(0, {});
+        pages->setCurrentWidget(artistPage);
+        artistPage->verticalScrollBar()->setValue(0);
+        currentArtistId = id;
+        int gen = ++artistGen;
+        artistTitle->clear();
+        artistMeta->clear();
+        artistAvatar->setPixmap(tile(184, 92, dpr(), theme::highlight));
+        artistSongs->clear();
+        artistSongUris.clear();
+        artistSongRows.clear();
+        artistSongsExpanded = false;
+        artistAlbums->clear();
+        artistNoAlbums->clear();
+        api->get("/artists/" + id, [this, id, gen](const QJsonObject &a) {
+            if (gen != artistGen) return;
+            QStringList genres;
+            for (const auto &g : a["genres"].toArray()) genres << g.toString();
+            artistTitle->setText(a["name"].toString());
+            artistMeta->setText(genres.mid(0, 3).join(", "));
+            covers.load(imageUrl(a["images"].toArray(), 184 * dpr()), this, [this, gen](const QPixmap &pm) {
+                if (gen == artistGen) artistAvatar->setPixmap(rounded(pm, 184, 92, dpr()));
+            });
+            loadArtistSongs(id, a["name"].toString(), gen);
+        });
+        // Discography arrives 10 at a time (the 2026 limit for this endpoint).
+        api->getAll("/artists/" + id + "/albums?include_groups=album,single&limit=10", [this, gen](const QJsonObject &page) {
+            if (gen != artistGen) return false;
+            for (const auto &v : page["items"].toArray()) {
+                auto a = v.toObject();
+                QString type = a["album_type"].toString();
+                auto *it = new QListWidgetItem(a["name"].toString(), artistAlbums);
+                it->setData(Role::Subtitle, a["release_date"].toString().left(4) + (type == "single" ? ", Single" : ", Album"));
+                it->setData(Role::Json, a);
+                it->setData(Role::Kind, 0);
+                it->setData(Role::Id, type);
+                // ponytail: an artist's whole discography loads its covers; page this like the albums grid if one runs to hundreds
+                setIconAsync(artistAlbums, it, imageUrl(a["images"].toArray(), CardDelegate::Cover * dpr()), CardDelegate::Cover, 6);
+            }
+            filterDiscography();
+            return true;
+        });
+    }
+
+    // Five pages of 10 (search's 2026 cap), kept in result order, only songs this artist is on.
+    void loadArtistSongs(const QString &id, QString name, int gen) {
+        name.remove('"');
+        auto pages = std::make_shared<QVector<QJsonArray>>(5);
+        auto done = std::make_shared<int>(0);
+        for (int i = 0; i < 5; ++i)
+            api->get(QString("/search?type=track&limit=10&offset=%1&q=").arg(i * 10) +
+                         QUrl::toPercentEncoding("artist:\"" + name + "\""),
+                     [this, id, gen, i, pages, done](const QJsonObject &o) {
+                         if (gen != artistGen) return;
+                         (*pages)[i] = o["tracks"].toObject()["items"].toArray();
+                         if (++*done < 5) return;
+                         QSet<QString> seenNames;
+                         for (const auto &page : *pages)
+                             for (const auto &v : page) {
+                                 auto t = v.toObject();
+                                 bool theirs = false;
+                                 for (const auto &a : t["artists"].toArray()) theirs |= a.toObject()["id"].toString() == id;
+                                 QString key = t["name"].toString().toLower();
+                                 if (!theirs || seenNames.contains(key)) continue;  // features elsewhere, duplicate versions
+                                 seenNames << key;
+                                 artistSongRows << t;
+                                 artistSongUris << t["uri"].toString();
+                             }
+                         showArtistSongs();
+                     });
+    }
+
+    void showArtistSongs() {
+        artistSongs->clear();
+        int shown = artistSongsExpanded ? int(artistSongRows.size()) : std::min<int>(10, int(artistSongRows.size()));
+        for (int i = 0; i < shown; ++i) {
+            const auto &t = artistSongRows[i];
+            auto *row = new QTreeWidgetItem({QString::number(i + 1), t["name"].toString(),
+                                             t["album"].toObject()["name"].toString(), formatTime(t["duration_ms"].toInteger())});
+            for (int c : {0, 2, 3}) row->setForeground(c, theme::subdued);
+            row->setTextAlignment(0, Qt::AlignCenter);
+            row->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+            if (t["uri"].toString() == nowUri) row->setForeground(1, theme::green);
+            artistSongs->addTopLevelItem(row);
+        }
+        artistSongs->setFixedHeight(std::max(1, shown) * 40 + artistSongs->header()->sizeHint().height() + 4);
+        artistSongs->setVisible(shown > 0);
+        artistMore->setVisible(artistSongRows.size() > 10);
+        artistMore->setText(artistSongsExpanded ? "Show less" : "Show more");
+    }
+
+    void filterDiscography() {
+        bool singles = chipSingles->isChecked();
+        for (int i = 0; i < artistAlbums->count(); ++i) {
+            auto *it = artistAlbums->item(i);
+            it->setHidden((it->data(Role::Id).toString() == "single") != singles);
+        }
+        fitGrid(artistAlbums);
+        artistNoAlbums->setText(artistAlbums->isVisible() ? QString() : singles ? "No singles or EPs." : "No albums.");
+    }
+
+    // ---- queue panel ------------------------------------------------------------------
+
+    QWidget *buildQueuePanel() {
+        auto *w = new QWidget;
+        auto *layout = new QVBoxLayout(w);
+        layout->setContentsMargins(16, 18, 12, 12);
+        layout->setSpacing(8);
+        auto *tabs = new QHBoxLayout;
+        queueTab = new QPushButton("Queue");
+        recentTab = new QPushButton("Recently played");
+        auto *group = new QButtonGroup(w);
+        for (auto *t : {queueTab, recentTab}) {
+            t->setObjectName("tab");
+            t->setCheckable(true);
+            group->addButton(t);
+            tabs->addWidget(t);
+        }
+        queueTab->setChecked(true);
+        tabs->addStretch();
+        auto *close = iconButton(Glyph::Close, 16, "Close");
+        tabs->addWidget(close);
+        layout->addLayout(tabs);
+        queueList = new QListWidget;
+        queueList->setItemDelegate(new RowDelegate(queueList));
+        queueList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        queueList->setMouseTracking(true);
+        queueList->viewport()->setAttribute(Qt::WA_Hover);
+        queueList->setSelectionMode(QAbstractItemView::NoSelection);
+        layout->addWidget(queueList, 1);
+        queueEmpty = label({}, "muted");
+        queueEmpty->setWordWrap(true);
+        layout->addWidget(queueEmpty);
+        layout->addStretch();
+        connect(close, &QToolButton::clicked, this, [this] { toggleQueue(false); });
+        connect(group, &QButtonGroup::buttonClicked, this, [this] { loadQueue(); });
+        // Recently played rows play on double-click; queued rows can't be jumped to through the API.
+        connect(queueList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *it) {
+            if (recentTab->isChecked() && !it->data(Role::Uri).toString().isEmpty())
+                play({{"uris", QJsonArray{it->data(Role::Uri).toString()}}});
+        });
+        return w;
+    }
+
+    void toggleQueue(bool open) {
+        sideStack->setCurrentIndex(open ? 1 : 0);
+        queueButton->setIcon(toggleIcon(Glyph::Queue, open, 20));
+        if (open) loadQueue();
+    }
+
+    void addQueueRow(const QJsonObject &t, int kind) {
+        auto *it = new QListWidgetItem(t["name"].toString(), queueList);
+        it->setData(Role::Subtitle, joinNames(t["artists"].toArray()));
+        it->setData(Role::Kind, kind);
+        it->setData(Role::Uri, t["uri"].toString());
+        setIconAsync(queueList, it, imageUrl(t["album"].toObject()["images"].toArray(), 80), 40, 4);
+    }
+
+    void addQueueHeader(const QString &text) {
+        auto *it = new QListWidgetItem(text, queueList);
+        it->setData(Role::Kind, RowDelegate::Header);
+        it->setFlags(Qt::ItemIsEnabled);
+    }
+
+    void loadQueue() {
+        if (sideStack->currentIndex() != 1) return;
+        int gen = ++queueGen;
+        queueList->clear();
+        queueEmpty->clear();
+        if (recentTab->isChecked()) {
+            api->get("/me/player/recently-played?limit=50", [this, gen](const QJsonObject &o) {
+                if (gen != queueGen) return;
+                for (const auto &v : o["items"].toArray()) addQueueRow(v.toObject()["track"].toObject(), 0);
+                queueEmpty->setText(queueList->count() ? QString() : "Songs you play show up here.");
+            });
+            return;
+        }
+        api->get("/me/player/queue", [this, gen](const QJsonObject &o) {
+            if (gen != queueGen) return;
+            auto now = o["currently_playing"].toObject();
+            auto next = o["queue"].toArray();
+            if (!now.isEmpty()) {
+                addQueueHeader("Now playing");
+                addQueueRow(now, RowDelegate::Current);
+            }
+            if (!next.isEmpty()) {
+                addQueueHeader(nowContextName.isEmpty() ? QString("Next up") : "Next from: " + nowContextName);
+                for (const auto &v : next) addQueueRow(v.toObject(), 0);
+            }
+            queueEmpty->setText(now.isEmpty() && next.isEmpty() ? "Your queue is empty. Right-click any song and choose Add to queue."
+                                                                 : QString());
+        });
+    }
+
+    // Queue in order: each add waits for the previous, or parallel requests could land shuffled.
+    void queueSongs(const QStringList &songs, int i) {
+        if (i >= songs.size()) return QTimer::singleShot(400, this, &Window::loadQueue);
+        api->send("POST", "/me/player/queue?uri=" + QUrl::toPercentEncoding(songs[i]), {},
+                  [this, songs, i](const QJsonObject &) { queueSongs(songs, i + 1); });
+    }
+
+    // "Next from: <album or playlist>" needs the playing context's name.
+    void resolveContext(const QString &uri) {
+        nowContextUri = uri;
+        nowContextName.clear();
+        QString id = uri.section(':', 2);
+        auto setName = [this, uri](const QJsonObject &o) {
+            if (uri == nowContextUri) nowContextName = o["name"].toString();
+            loadQueue();
+        };
+        if (uri.startsWith("spotify:album:")) api->get("/albums/" + id, setName);
+        else if (uri.startsWith("spotify:playlist:")) api->get("/playlists/" + id, setName);
+        else if (uri.startsWith("spotify:artist:")) api->get("/artists/" + id, setName);
+        else if (uri.endsWith(":collection")) nowContextName = "Liked Songs";
+    }
+
+    // ---- shuffle, repeat, volume ----------------------------------------------------
+
+    void updateModeButtons() {
+        shuffleButton->setIcon(toggleIcon(Glyph::Shuffle, shuffleOn, 20));
+        shuffleButton->setToolTip(shuffleOn ? "Disable shuffle (Ctrl+S)" : "Enable shuffle (Ctrl+S)");
+        repeatButton->setIcon(toggleIcon(repeatState == "track" ? Glyph::RepeatOne : Glyph::Repeat, repeatState != "off", 20));
+        repeatButton->setToolTip(repeatState == "off" ? "Enable repeat (Ctrl+R)"
+                                 : repeatState == "context" ? "Enable repeat one (Ctrl+R)" : "Disable repeat (Ctrl+R)");
+    }
+
+    void setShuffle(bool on) {
+        shuffleOn = on;  // optimistic; the next poll corrects it
+        updateModeButtons();
+        api->send("PUT", QString("/me/player/shuffle?state=%1").arg(on ? "true" : "false"), {}, pollSoon());
+        pushMpris();
+    }
+
+    void setRepeat(const QString &state) {
+        repeatState = state;
+        updateModeButtons();
+        api->send("PUT", "/me/player/repeat?state=" + state, {}, pollSoon());
+        pushMpris();
+    }
+
+    void setVolumePercent(int v) {
+        v = std::clamp(v, 0, 100);
+        volume->setValue(v);
+        api->send("PUT", QString("/me/player/volume?volume_percent=%1").arg(v));
+        pushMpris();
+    }
+
+    // ---- mini player, full screen, media keys ---------------------------------------
+
+    Transport transport() {
+        return {[this] { playPause->click(); }, [this] { prevButton->click(); }, [this] { nextButton->click(); }, {}};
+    }
+
+    void toggleMini() {
+        if (!mini) {
+            mini = new MiniPlayer(this);
+            mini->transport = transport();
+            mini->transport.closed = [this] { miniButton->setIcon(toggleIcon(Glyph::MiniPlayer, false, 18)); };
+            QRect screen = this->screen()->availableGeometry();
+            mini->move(screen.right() - mini->width() - 24, screen.bottom() - mini->height() - 24);
+        }
+        if (mini->isVisible()) return void(mini->close());
+        mini->show();
+        miniButton->setIcon(toggleIcon(Glyph::MiniPlayer, true, 18));
+        pushNowPlaying();
+    }
+
+    void toggleFull() {
+        if (!full) {
+            full = new FullScreenView(this);
+            full->transport = transport();
+        }
+        if (full->isVisible()) return void(full->close());
+        full->showFullScreen();
+        loadBigCover();
+        pushNowPlaying();
+    }
+
+    // The panel's cover is ~300 px; full screen wants the 640 px one.
+    void loadBigCover() {
+        QString url = imageUrl(nowAlbum["images"].toArray(), 640);
+        covers.load(url, this, [this, url](const QPixmap &pm) {
+            if (url == imageUrl(nowAlbum["images"].toArray(), 640)) {
+                bigCover = pm;
+                pushNowPlaying();
+            }
+        });
+    }
+
+    void pushNowPlaying() {
+        bool miniOn = mini && mini->isVisible(), fullOn = full && full->isVisible();
+        if (!miniOn && !fullOn) return;
+        NowPlaying s{nowItem["name"].toString(), joinNames(nowItem["artists"].toArray()), nowCover, nowMood,
+                     playing, positionMs(), seek->maximum()};
+        pushedSecond = s.position / 1000;
+        if (miniOn) mini->setState(s);
+        if (fullOn) {
+            if (!bigCover.isNull() && !nowItem.isEmpty()) s.cover = bigCover;
+            full->setState(s);
+        }
+    }
+
+    void wireMpris() {
+        mpris = new Mpris(this);
+        mpris->raise = [this] {
+            showNormal();
+            raise();
+            activateWindow();
+        };
+        mpris->playPause = [this] { playPause->click(); };
+        mpris->play = [this] { if (!playing) playPause->click(); };
+        mpris->pause = [this] { if (playing) playPause->click(); };
+        mpris->next = [this] { nextButton->click(); };
+        mpris->previous = [this] { prevButton->click(); };
+        mpris->seekBy = [this](qint64 us) { seekTo(std::clamp<qint64>(positionMs() + us / 1000, 0, seek->maximum())); };
+        mpris->seekTo = [this](qint64 us) { seekTo(std::clamp<qint64>(us / 1000, 0, seek->maximum())); };
+        mpris->setShuffle = [this](bool on) { setShuffle(on); };
+        mpris->setLoop = [this](const QString &s) { setRepeat(s == "Track" ? "track" : s == "Playlist" ? "context" : "off"); };
+        mpris->setVolume = [this](double v) { setVolumePercent(qRound(v * 100)); };
+        mpris->positionUs = [this] { return positionMs() * 1000; };
+    }
+
+    void pushMpris() {
+        if (!mpris) return;
+        Mpris::State s;
+        s.hasTrack = !nowUri.isEmpty();
+        s.trackId = nowItem["id"].toString();
+        s.title = nowItem["name"].toString();
+        s.album = nowAlbum["name"].toString();
+        s.artUrl = imageUrl(nowAlbum["images"].toArray(), 300);
+        for (const auto &a : nowItem["artists"].toArray()) s.artists << a.toObject()["name"].toString();
+        s.lengthUs = qint64(seek->maximum()) * 1000;
+        s.playing = playing;
+        s.shuffle = shuffleOn;
+        s.loop = repeatState == "track" ? "Track" : repeatState == "context" ? "Playlist" : "None";
+        s.volume = volume->value() / 100.0;
+        mpris->update(s);
+    }
+
+    // ---- keyboard shortcuts -----------------------------------------------------------
+
+    void buildShortcuts() {
+        auto focusSearch = [this] { search->setFocus(); search->selectAll(); };
+        shortcuts = {
+            {"Space", "Play or pause", [this] { playPause->click(); }},
+            {"Ctrl+Right", "Next song", [this] { nextButton->click(); }},
+            {"Ctrl+Left", "Previous song", [this] { prevButton->click(); }},
+            {"Shift+Right", "Seek forward 5 seconds", [this] { seekTo(std::min<qint64>(positionMs() + 5000, seek->maximum())); }},
+            {"Shift+Left", "Seek back 5 seconds", [this] { seekTo(std::max<qint64>(positionMs() - 5000, 0)); }},
+            {"Ctrl+Up", "Volume up", [this] { setVolumePercent(volume->value() + 10); }},
+            {"Ctrl+Down", "Volume down", [this] { setVolumePercent(volume->value() - 10); }},
+            {"Ctrl+S", "Shuffle", [this] { setShuffle(!shuffleOn); }},
+            {"Ctrl+R", "Repeat", [this] { setRepeat(nextRepeat(repeatState)); }},
+            {"Alt+Shift+B", "Like the current song", [this] { if (!nowUri.isEmpty()) setLiked({nowUri}, !nowLiked); }},
+            {"Ctrl+L", "Search", focusSearch},
+            {"Alt+Left", "Go back", [this] { stepHistory(-1); }},
+            {"Alt+Right", "Go forward", [this] { stepHistory(1); }},
+            {"Alt+Shift+H", "Home", [this] { goNav(HomePage); }},
+            {"Alt+Shift+A", "Your albums", [this] { goNav(AlbumsPage); }},
+            {"Alt+Shift+S", "Liked Songs", [this] { goNav(LikedSongs); }},
+            {"Alt+Shift+Q", "Queue", [this] { toggleQueue(sideStack->currentIndex() == 0); }},
+            {"Alt+Shift+L", "Lyrics", [this] { lyricsButton->click(); }},
+            {"Ctrl+N", "Create playlist", [this] { createPlaylist({}); }},
+            {"Ctrl+M", "Mini player", [this] { toggleMini(); }},
+            {"F11", "Full screen", [this] { toggleFull(); }},
+            {"F1", "Keyboard shortcuts", [this] { showShortcuts(); }},
+        };
+        for (const auto &sc : shortcuts) new QShortcut(QKeySequence(sc.keys), this, sc.run);
+        // Ctrl+/ is the usual sheet key on QWERTY; on AZERTY "/" needs Shift, so F1 is the listed one.
+        new QShortcut(QKeySequence("Ctrl+/"), this, [this] { showShortcuts(); });
+    }
+
+    void showShortcuts() {
+        QDialog dialog(this);
+        dialog.setWindowTitle("Keyboard shortcuts");
+        auto *layout = new QVBoxLayout(&dialog);
+        layout->setContentsMargins(24, 20, 24, 20);
+        layout->addWidget(label("Keyboard shortcuts", "section"));
+        auto *gridLayout = new QGridLayout;
+        gridLayout->setHorizontalSpacing(40);
+        gridLayout->setVerticalSpacing(8);
+        int half = int(shortcuts.size() + 1) / 2;
+        for (int i = 0; i < shortcuts.size(); ++i) {
+            int col = i < half ? 0 : 2, row = i < half ? i : i - half;
+            gridLayout->addWidget(label(shortcuts[i].what), row, col);
+            gridLayout->addWidget(label(QKeySequence(shortcuts[i].keys).toString(QKeySequence::NativeText), "kbd"), row, col + 1, Qt::AlignRight);
+        }
+        layout->addLayout(gridLayout);
+        auto *close = new QPushButton("Close");
+        close->setObjectName("ghost");
+        connect(close, &QPushButton::clicked, &dialog, &QDialog::accept);
+        layout->addWidget(close, 0, Qt::AlignRight);
+        dialog.exec();
     }
 
     Api *api;
@@ -1117,6 +2119,37 @@ private:
     int currentLyric = -1, pageBeforeLyrics = 0;
     bool nowLiked = false;
     QProcess *engine = nullptr;
+    // history, library, home, artist, queue, modes, extra views, media keys
+    QList<std::function<void()>> history;
+    int histPos = -1;
+    QToolButton *backButton, *forwardButton, *sortButton, *prevButton, *nextButton, *shuffleButton, *repeatButton,
+        *queueButton, *miniButton, *fullButton, *artistPlay;
+    QPushButton *albumSortButton, *artistMore, *chipAlbums, *chipSingles, *queueTab, *recentTab;
+    QLineEdit *libFilter, *albumFilter;
+    QString librarySort = "recents", albumSort = "recent", repeatState = "off";
+    int playlistOrder = 0, createdCount = 0, homeGen = 0, artistGen = 0, queueGen = 0;
+    QScrollArea *homePage = nullptr, *artistPage = nullptr;
+    QGridLayout *shortcutGrid;
+    QListWidget *homeArtists = nullptr, *homeSongs = nullptr, *artistAlbums = nullptr, *queueList = nullptr;
+    QLabel *homeEmpty, *homeArtistsTitle, *homeSongsTitle, *artistAvatar, *artistTitle, *artistMeta, *artistNoAlbums, *queueEmpty;
+    QElapsedTimer homeLoadedAt;
+    QStringList homeSongUris, artistSongUris;
+    QList<QJsonObject> artistSongRows;
+    bool artistSongsExpanded = false, shuffleOn = false;
+    QString currentArtistId, nowContextUri, nowContextName;
+    QTreeWidget *artistSongs;
+    QStackedWidget *sideStack;
+    MiniPlayer *mini = nullptr;
+    FullScreenView *full = nullptr;
+    Mpris *mpris = nullptr;
+    QPixmap nowCover, bigCover;
+    QColor nowMood;
+    qint64 pushedSecond = -1;
+    struct Shortcut {
+        const char *keys, *what;
+        std::function<void()> run;
+    };
+    QList<Shortcut> shortcuts;
     QFrame *connectBar;
     QLabel *connectText, *barCover, *barTrack;
     QTreeWidget *tracks;
@@ -1140,6 +2173,7 @@ int main(int argc, char **argv) {
     app.setApplicationName("ignify");
     theme::apply(app);
     app.setWindowIcon(QIcon(appIcon(256, 1)));
+    app.setDesktopFileName("ignify");  // matches ignify.desktop, so docks group and pin the window
 
     QSettings settings;
     QDir().mkpath(QFileInfo(settings.fileName()).path());

@@ -33,7 +33,8 @@ ARTISTS = ["Nadia K", "The Tidelines", "Oumaima", "Static Hearts", "Lune", "Marr
 SONGS = ["Intro", "Waves", "Afterglow", "Signals", "Paper Moon", "Run", "Closer", "Echoes", "Daylight", "Outro"]
 SCOPES = ("user-read-playback-state user-modify-playback-state playlist-read-private "
           "playlist-read-collaborative user-library-read user-library-modify "
-          "playlist-modify-public playlist-modify-private")
+          "playlist-modify-public playlist-modify-private user-read-currently-playing "
+          "user-read-recently-played user-top-read")
 # Invented for the mock: (Wikipedia title → short description, extract).
 WIKI = {
     "Nadia_K": ("Moroccan singer-songwriter",
@@ -105,6 +106,7 @@ PLAYLISTS.append(("Today's Top Hits", "spotify"))  # followed, not editable
 if EVIL:  # a followed playlist's name is written by someone else
     PLAYLISTS.append((f'<img src="{LOCAL_IMG}"><span style="font-size:60px;color:red">PWNED</span>', "stranger"))
 LIKED = {"spotify:track:0-3"}
+PLAYER = {"shuffle": False, "repeat": "off", "queue": [track(0, n) for n in range(2, 8)]}
 STARTED, READY = time.time(), False
 
 
@@ -157,6 +159,31 @@ class Handler(BaseHTTPRequestHandler):
                 {"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": n, "collaborative": False,
                  "owner": {"id": owner, "display_name": "Iliass" if owner == "me" else "Spotify"},
                  "items": {"total": 10}, "images": images(i + 3)} for i, (n, owner) in enumerate(PLAYLISTS)]})
+        if m := re.fullmatch(r"/v1/playlists/pl(\d+)", path):  # playlist metadata
+            i = int(m[1])
+            n, owner = PLAYLISTS[i] if i < len(PLAYLISTS) else (f"New playlist {i}", "me")
+            return self.send_json({"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": n, "images": images(i + 3),
+                                   "owner": {"id": owner, "display_name": "Iliass"}, "items": {"total": 10}})
+        if m := re.fullmatch(r"/v1/albums/al(\d+)", path):
+            return self.send_json(album(int(m[1])))
+        if m := re.fullmatch(r"/v1/artists/ar(\d+)/albums", path):
+            a, offset, limit = int(m[1]), int(q.get("offset", 0)), min(int(q.get("limit", 5)), 10)  # 10 max, like Spotify
+            mine = [album(i) | {"album_type": "single" if i % 4 == 3 else "album"} for i in range(min(N_ALBUMS, 40))
+                    if i % len(ARTISTS) == a]
+            nxt = f"{BASE}/v1/artists/ar{a}/albums?offset={offset + limit}&limit={limit}" if offset + limit < len(mine) else None
+            return self.send_json({"total": len(mine), "next": nxt, "items": mine[offset:offset + limit]})
+        if path == "/v1/me/player/queue":
+            return self.send_json({"currently_playing": track(0, 1), "queue": PLAYER["queue"]})
+        if path == "/v1/me/player/recently-played":
+            return self.send_json({"items": [{"track": track(a, a % 10), "played_at": "2026-10-16T10:00:00Z",
+                                              "context": {"type": "album", "uri": f"spotify:album:al{a}"} if a % 2 else
+                                              {"type": "playlist", "uri": f"spotify:playlist:pl{a % 6}"}}
+                                             for a in range(1, 11)]})
+        if m := re.fullmatch(r"/v1/me/top/(artists|tracks)", path):
+            if m[1] == "artists":
+                return self.send_json({"items": [{"id": f"ar{i}", "name": ARTISTS[i], "uri": f"spotify:artist:ar{i}",
+                                                  "images": images(40 + i)} for i in range(len(ARTISTS))]})
+            return self.send_json({"items": [track(i % 12, (i * 3) % 10) for i in range(10)]})
         if path == "/v1/me/tracks" or path.startswith("/v1/playlists/"):
             return self.send_json({"total": 10, "next": None, "items": [{"track": track(n, n)} for n in range(10)]})
         if m := re.fullmatch(r"/v1/albums/al(\d+)/tracks", path):
@@ -169,6 +196,10 @@ class Handler(BaseHTTPRequestHandler):
                                    "genres": [["moroccan pop", "electropop"], ["indie rock"], ["alt r&b"]][i % 3]})
         if path == "/v1/search":
             offset = int(q.get("offset", 0))
+            if am := re.match(r'artist:"(.+)"', q.get("q", "")):  # an artist's songs
+                a = ARTISTS.index(am[1]) if am[1] in ARTISTS else 0
+                songs = [track(i, n) for i in range(12) if i % len(ARTISTS) == a for n in range(10)]
+                return self.send_json({"tracks": {"items": songs[offset:offset + 10]}})
             return self.send_json({"tracks": {"items": [track((offset + n) % 12, n) for n in range(10)]}})
         if path == "/v1/me/library/contains":
             return self.send_json([u in LIKED for u in self.uris()])
@@ -183,6 +214,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.empty(204)
             item = track(0, 1)
             return self.send_json({"is_playing": True, "device": active, "item": item,
+                                   "shuffle_state": PLAYER["shuffle"], "repeat_state": PLAYER["repeat"],
+                                   "context": {"type": "album", "uri": "spotify:album:al0"},
                                    "progress_ms": int((time.time() - STARTED) * 1000) % item["duration_ms"]})
         if path == "/lrclib/api/get":
             if "Waves" in q.get("track_name", ""):
@@ -208,8 +241,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"access_token": "mock", "expires_in": 3600, "refresh_token": "mock-refresh",
                                    "scope": SCOPES})
         print("POST", self.path, body, flush=True)
-        if re.fullmatch(r"/v1/playlists/pl\d+/items", urlparse(self.path).path):
+        path = urlparse(self.path).path
+        if re.fullmatch(r"/v1/playlists/pl\d+/items", path):
             return self.send_json({"snapshot_id": "mock"}, 201)
+        if path == "/v1/me/playlists":  # create
+            name = json.loads(body).get("name", "New playlist")
+            PLAYLISTS.append((name, "me"))
+            i = len(PLAYLISTS) - 1
+            return self.send_json({"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": name, "images": [],
+                                   "collaborative": False, "owner": {"id": "me", "display_name": "Iliass"},
+                                   "items": {"total": 0}}, 201)
+        if path == "/v1/me/player/queue":
+            uri = unquote(parse_qs(urlparse(self.path).query).get("uri", [""])[0])
+            a, n = (uri.rsplit(":", 1)[1].split("-") + ["0"])[:2]
+            PLAYER["queue"].insert(0, track(int(a), int(n)))
         self.empty(204)
 
     def do_PUT(self):
@@ -223,6 +268,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/me/library":
             LIKED.update(self.uris())
             return self.empty(200)
+        state = parse_qs(urlparse(self.path).query).get("state", [""])[0]
+        if path == "/v1/me/player/shuffle":
+            PLAYER["shuffle"] = state == "true"
+        if path == "/v1/me/player/repeat":
+            PLAYER["repeat"] = state
         self.empty(204)
 
     def do_DELETE(self):

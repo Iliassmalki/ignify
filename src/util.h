@@ -94,3 +94,23 @@ inline QString clip(const QString &text, int max) {
     int cut = text.lastIndexOf(' ', max);
     return text.left(cut > 0 ? cut : max) + "\u2026";
 }
+
+// Spotify's repeat button cycles off -> all (context) -> one (track) -> off.
+inline QString nextRepeat(const QString &state) {
+    return state == "off" ? "context" : state == "context" ? "track" : "off";
+}
+
+// "A, B" as rich-text links ("artist:<id>") for labels that open artist pages. Names are escaped;
+// an id that isn't plain base62 is shown as text rather than trusted inside an href.
+inline QString artistLinks(const QJsonArray &artists, const QString &color) {
+    static const QRegularExpression safeId("^[A-Za-z0-9]+$");
+    QStringList out;
+    for (const auto &v : artists) {
+        auto a = v.toObject();
+        QString name = a["name"].toString().toHtmlEscaped(), id = a["id"].toString();
+        out << (safeId.match(id).hasMatch()
+                    ? QString("<a href=\"artist:%1\" style=\"color:%2;text-decoration:none\">%3</a>").arg(id, color, name)
+                    : name);
+    }
+    return out.join(", ");
+}

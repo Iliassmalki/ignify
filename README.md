@@ -23,11 +23,19 @@ Requires Spotify Premium.
    - API: Web API
    - Copy its **Client ID**.
 
-## Build and run
+## Build and install
 
 ```bash
-cmake -S . -B build && cmake --build build -j && ctest --test-dir build
-./build/ignify
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$HOME/.local && cmake --build build -j && ctest --test-dir build
+cmake --install build
+```
+
+This puts `ignify` in `~/.local/bin`, its launcher in your app menu, and the flame icon in
+`~/.local/share/icons`, so it opens with a click like any other app. To also get a desktop
+icon on Linux Mint (Nemo), copy the launcher and mark it trusted:
+
+```bash
+cp ~/.local/share/applications/ignify.desktop ~/Desktop/ && chmod +x ~/Desktop/ignify.desktop && gio set ~/Desktop/ignify.desktop metadata::trusted true
 ```
 
 On first launch ignify asks for the Client ID and opens two browser sign-ins: one for
@@ -38,11 +46,23 @@ ignify itself and one for librespot. Both are remembered after that:
 
 ## Using it
 
-- **Albums**: your saved albums. Click one to see its songs.
+- **Home**: shortcuts to the albums and playlists you played last, your top artists and
+  your top songs this month.
+- **Artist pages**: click any artist name (now playing, the bar, a song row, an album
+  header, Home) for their songs and discography (albums, singles and EPs).
+- **Albums**: your saved albums, with filter and sort (recently added, alphabetical, artist).
+- **Your Library**: search it, sort it (recents, alphabetical, creator), and create playlists.
 - **Playlists**: double-click to play. Spotify only lets apps list the songs of
   playlists you own or collaborate on (2026 API rules). Playlists you follow still play.
-- Double-click or press Enter on a song to play it. **Ctrl+Space** plays or pauses.
-  **Ctrl+L** jumps to search.
+- **Queue**: the queue button shows Now playing, "Next from" the album or playlist, and a
+  Recently played tab. Right-click songs to add them to the queue.
+- **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
+- **Back and forward** between pages: the arrows by the logo, or Alt+Left / Alt+Right.
+- **Mini player** (Ctrl+M): a small always-on-top window with controls on hover.
+- **Full screen** (F11): large cover on a blurred backdrop. Esc leaves.
+- **Media keys and the desktop's sound menu** work through MPRIS (D-Bus).
+- **F1** lists every keyboard shortcut. Double-click or press Enter on a song to play it;
+  Space plays or pauses.
 - Without librespot, ignify works as a remote for whatever device is active.
 
 ## Lyrics, artist info, likes and playlists
@@ -87,8 +107,8 @@ change.
 
 | measured | budget | official Spotify (same laptop) |
 |---|---|---|
-| binary 0.43 MB | 1 MB | 347 MB install |
-| memory 38 MB headless, ~49 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
+| binary 0.76 MB | 1 MB | 347 MB install |
+| memory 45 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
 | CPU ~1% (+~2% librespot) while playing | 3% | 23% idle on the home screen |
 
 Covers are only kept near the visible part of the grid. Loading every cover up front cost
@@ -96,9 +116,10 @@ Covers are only kept near the visible part of the grid. Loading every cover up f
 
 ## Testing without a Spotify account
 
-`tools/mock_spotify.py` is a local stand-in for the Web API. It has fake albums with
-generated covers, playlists, and three devices, the active one being a phone. It logs every
-PUT/POST, so you can see the transfer and play calls arrive.
+`tools/mock_spotify.py` is a local stand-in for the Web API, LRCLIB and Wikipedia. It has
+fake albums with generated covers, playlists, artists with discographies, a queue, listening
+history, top items, and three devices, the active one being a phone. It logs every write, so
+you can see play, queue, shuffle, repeat, like and playlist calls arrive.
 
 ```bash
 python3 tools/mock_spotify.py &
@@ -111,7 +132,10 @@ B=http://127.0.0.1:8899; XDG_CONFIG_HOME=/tmp/ignify-mock IGNIFY_API=$B/v1 IGNIF
 - **Liked Songs**: starting a song queues it and the next 99, because Spotify has no
   playable "liked songs" context with an offset.
 - **Search**: shows the top 50 results (5 pages of 10, the API maximum per page).
-- **Media keys**: there is no MPRIS support yet, so media keys don't work.
+- **Artist "Popular" songs**: Spotify removed the top-tracks endpoint in 2026, so artist
+  pages list the artist's songs from search, labelled "Songs".
+- **Queue**: songs in the queue can't be jumped to or removed; the public API only reads it
+  and adds to it.
 - **Lyrics** depend on LRCLIB's coverage, and the **artist bio** on finding a confident Wikipedia match. Without one, the card shows photo, name and genres.
 - **Phones in the picker**: a phone only appears once its Spotify app is open, same as in the official client.
 - **Jam and Google Cast**: the official picker's Jam (group listening) and Cast rows are not

@@ -20,11 +20,17 @@ void apply(QApplication &app);  // style, palette, font, stylesheet
 }
 
 namespace Role {
-enum { Kind = Qt::UserRole, Uri, Id, Subtitle, Json, Image, Loaded };
+enum { Kind = Qt::UserRole, Uri, Id, Subtitle, Json, Image, Loaded, Order };
 }
 
-enum class Glyph { Play, Pause, Prev, Next, Heart, HeartOutline, Plus, Check, Grid, Volume, Devices, Computer, Phone, Speaker, Mic };
+enum class Glyph { Play, Pause, Prev, Next, Heart, HeartOutline, Plus, Check, Grid, Volume, Devices, Computer, Phone,
+                   Speaker, Mic, Shuffle, Repeat, RepeatOne, Queue, MiniPlayer, FullScreen, Home, Back, Forward,
+                   Search, Sort, Close };
 QIcon glyphIcon(Glyph g, const QColor &color, int size = 24);
+void paintGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box);
+// Spotify's on/off controls (shuffle, repeat, queue): green with a dot underneath when on.
+// The icon is size x (size + 6); give the button that icon size.
+QIcon toggleIcon(Glyph g, bool on, int size);
 // Rounded square: a cover cropped to fill it, or `bg` with an optional glyph on top.
 QPixmap rounded(const QPixmap &src, QSize size, qreal radius, qreal dpr);
 inline QPixmap rounded(const QPixmap &src, int size, qreal radius, qreal dpr) {
@@ -53,11 +59,22 @@ private:
 };
 
 // Album grid cell: cover, bold title, muted artist; no box around it.
+// Items with Role::Kind == Round draw a round placeholder (artists, as in Spotify).
 class CardDelegate : public QStyledItemDelegate {
 public:
-    static constexpr int Cover = 168, Pad = 12;
+    static constexpr int Cover = 168, Pad = 12, Round = 1;
     static QSize cell() { return {Cover + 2 * Pad, Cover + 2 * Pad + 46}; }
     using QStyledItemDelegate::QStyledItemDelegate;
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override { return cell(); }
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override;
+};
+
+// Queue / recently-played row: 40px cover, white title over grey artist. Role::Kind marks
+// section headers ("Now playing", "Next from: ...") and the playing row (green title).
+class RowDelegate : public QStyledItemDelegate {
+public:
+    enum { Header = 1, Current = 2 };
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &idx) const override;
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override;
 };

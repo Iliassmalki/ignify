@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ignify
+GenericName=Music Player
+Comment=Native Spotify client
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/ignify
+Icon=ignify
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=spotify;music;player;lyrics;
+StartupWMClass=ignify
+StartupNotify=true

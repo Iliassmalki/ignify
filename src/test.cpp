@@ -62,5 +62,14 @@ int main() {
     assert(clip("one two three four", 9) == "one two\u2026");
     assert(clip("abcdefghij", 4) == "abcd\u2026");
 
+    assert(nextRepeat("off") == "context" && nextRepeat("context") == "track" && nextRepeat("track") == "off");
+
+    QJsonArray two{QJsonObject{{"id", "ar0"}, {"name", "Nadia K"}}, QJsonObject{{"id", "ar1"}, {"name", "A&B <x>"}}};
+    QString links = artistLinks(two, "#B3B3B3");
+    assert(links.contains("href=\"artist:ar0\"") && links.contains(">Nadia K</a>"));
+    assert(links.contains("A&amp;B &lt;x&gt;"));  // names escaped
+    QJsonArray hostile{QJsonObject{{"id", "x\" onclick=\"y"}, {"name", "Evil"}}};
+    assert(artistLinks(hostile, "#fff") == "Evil");  // a non-base62 id never reaches an href
+
     puts("ignify_test: ok");
 }
