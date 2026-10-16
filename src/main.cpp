@@ -2376,6 +2376,7 @@ private:
         if (!miniOn && !fullOn) return;
         NowPlaying s{nowItem["name"].toString(), joinNames(nowItem["artists"].toArray()), nowCover, nowMood,
                      playing, positionMs(), seek->maximum()};
+        s.local = !deviceId.isEmpty() && activeDeviceId == deviceId;  // librespot is the one playing
         pushedSecond = s.position / 1000;
         if (miniOn) mini->setState(s);
         if (fullOn) {

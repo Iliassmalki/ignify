@@ -15,6 +15,7 @@ Security test switches (off by default):
                         link outside /v1 that logs any Authorization header it receives
   MOCK_FOLLOWED_ONLY=1  the user owns no playlists
   MOCK_DELAY=3          playlist and Liked Songs pages take 3 s, to see what the list cache hides
+  MOCK_COVER=photo.png  album 0's cover, to judge the full-screen blur on a real picture
 """
 import json, os, re, struct, sys, time, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -139,6 +140,8 @@ class Handler(BaseHTTPRequestHandler):
         path, q = url.path, {k: v[0] for k, v in parse_qs(url.query).items()}
         if m := re.fullmatch(r"/img/(\d+)\.png", path):
             data = COVERS[int(m[1]) % 12]
+            if os.environ.get("MOCK_COVER") and int(m[1]) == 0:  # a real photo for album 0
+                data = open(os.environ["MOCK_COVER"], "rb").read()
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
             self.send_header("Content-Length", str(len(data)))
@@ -228,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
             if not active:
                 return self.empty(204)
             item = track(0, 1)
-            return self.send_json({"is_playing": True, "device": active, "item": item,
+            return self.send_json({"is_playing": PLAYER.get("playing", True), "device": active, "item": item,
                                    "shuffle_state": PLAYER["shuffle"], "repeat_state": PLAYER["repeat"],
                                    "context": {"type": PLAYER["context"].split(":")[1], "uri": PLAYER["context"]},
                                    "progress_ms": int((time.time() - STARTED) * 1000) % item["duration_ms"]})
@@ -285,6 +288,8 @@ class Handler(BaseHTTPRequestHandler):
             LIKED.update(self.uris())
             return self.empty(200)
         state = parse_qs(urlparse(self.path).query).get("state", [""])[0]
+        if path in ("/v1/me/player/play", "/v1/me/player/pause"):
+            PLAYER["playing"] = path.endswith("play")
         if path == "/v1/me/player/play" and body and "context_uri" in json.loads(body):
             PLAYER["context"] = json.loads(body)["context_uri"]
         if path == "/v1/me/player/shuffle":

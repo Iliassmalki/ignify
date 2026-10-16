@@ -8,6 +8,9 @@
 #include <QRegularExpression>
 #include <QStringList>
 #include <algorithm>
+#include <cmath>
+#include <complex>
+#include <vector>
 
 // RFC 7636 S256 code challenge for the PKCE sign-in.
 inline QString pkceChallenge(const QString &verifier) {
@@ -47,6 +50,59 @@ inline QJsonObject compactEntry(const QJsonObject &entry) {
     }
     QJsonObject out{{"track", track}};
     if (entry.contains("added_at")) out["added_at"] = entry["added_at"];
+    return out;
+}
+
+// In-place radix-2 FFT; a.size() must be a power of two.
+inline void fft(std::vector<std::complex<float>> &a) {
+    const size_t n = a.size();
+    for (size_t i = 1, j = 0; i < n; ++i) {  // bit-reversal permutation
+        size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(a[i], a[j]);
+    }
+    for (size_t len = 2; len <= n; len <<= 1) {
+        const float angle = -2 * float(M_PI) / float(len);
+        const float sr = std::cos(angle), si = std::sin(angle);
+        for (size_t i = 0; i < n; i += len) {
+            float wr = 1, wi = 0;
+            for (size_t k = 0; k < len / 2; ++k) {
+                // Multiplied out by hand: std::complex's operator* calls a NaN-safe helper
+                // (__mulsc3) per product, which made this several times slower.
+                auto &x = a[i + k + len / 2];
+                std::complex<float> v(x.real() * wr - x.imag() * wi, x.real() * wi + x.imag() * wr);
+                auto u = a[i + k];
+                a[i + k] = u + v;
+                x = u - v;
+                float t = wr * sr - wi * si;
+                wi = wr * si + wi * sr;
+                wr = t;
+            }
+        }
+    }
+}
+
+// Spectrum levels 0..1 in `bands` log-spaced bands from lo to hi Hz, for mono samples in
+// -1..1 (a power-of-two count). Tilted +3 dB per octave around 1 kHz, as music falls off by
+// about that much, so the treble bars aren't always flat. -60..-10 dB maps to 0..1.
+inline std::vector<float> spectrumBands(const std::vector<float> &samples, int rate, int bands,
+                                        float lo = 40, float hi = 14000) {
+    const size_t n = samples.size();
+    std::vector<std::complex<float>> a(n);
+    for (size_t i = 0; i < n; ++i)  // Hann window: no smearing from the cut edges
+        a[i] = samples[i] * 0.5f * (1 - std::cos(2 * float(M_PI) * float(i) / float(n - 1)));
+    fft(a);
+    const float binHz = float(rate) / float(n);
+    std::vector<float> out(bands);
+    for (int b = 0; b < bands; ++b) {
+        float f0 = lo * std::pow(hi / lo, float(b) / bands), f1 = lo * std::pow(hi / lo, float(b + 1) / bands);
+        size_t i0 = std::max<size_t>(1, size_t(f0 / binHz)), i1 = std::min(n / 2 - 1, std::max(i0, size_t(f1 / binHz)));
+        float peak = 0;
+        for (size_t i = i0; i <= i1; ++i) peak = std::max(peak, std::abs(a[i]));
+        float db = 20 * std::log10(peak / (float(n) / 4) + 1e-9f) + 3 * std::log2(std::sqrt(f0 * f1) / 1000);
+        out[b] = std::clamp((db + 60) / 50, 0.f, 1.f);
+    }
     return out;
 }
 

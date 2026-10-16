@@ -34,6 +34,16 @@ int main() {
     assert(!unwrapTrack(compactEntry(QJsonObject{{"uri", "spotify:track:b"}})).contains("album"));  // album page tracks
     assert(compactEntry(full) == compactEntry(small));  // compacting twice changes nothing
 
+    // spectrumBands: a 1 kHz tone lights the band holding 1 kHz and little else; silence is 0
+    std::vector<float> tone(4096), quiet(4096, 0.f);
+    for (size_t i = 0; i < tone.size(); ++i) tone[i] = 0.5f * std::sin(2 * float(M_PI) * 1000 * float(i) / 44100);
+    auto bands = spectrumBands(tone, 44100, 48);
+    int loudest = int(std::max_element(bands.begin(), bands.end()) - bands.begin());
+    float f0 = 40 * std::pow(14000.f / 40, float(loudest) / 48), f1 = 40 * std::pow(14000.f / 40, float(loudest + 1) / 48);
+    assert(f0 <= 1000 && 1000 < f1 && bands[loudest] > 0.8f);
+    assert(bands[0] < 0.1f && bands[47] < 0.1f);  // 40 Hz and 14 kHz stay dark
+    for (float v : spectrumBands(quiet, 44100, 48)) assert(v == 0);
+
     assert(joinNames(QJsonArray{QJsonObject{{"name", "A"}}, QJsonObject{{"name", "B"}}}) == "A, B");
 
     auto img = [](int w, const char *url) { return QJsonObject{{"width", w}, {"url", url}}; };

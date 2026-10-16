@@ -15,5 +15,5 @@ fileignoreconfig:
 - filename: src/mpris.h
   checksum: 684b93497a58388b444674fcac41fe3b10f980c68cf10bd9f71c5b4927d4e51b
 - filename: src/views.cpp
-  checksum: 9b21f6a538a386ec8e1d382287bf264e3577977d5064dbc81aeec75ad869f40d
+  checksum: 2795fe17a813c625ac118e68374d81574af0025e3bb1f89288e6f7aed91c00f4
 version: "1.0"

@@ -1,12 +1,16 @@
 #include "ui.h"
 #include <QApplication>
 #include <algorithm>
+#include <array>
 #include <tuple>
 #include <QNetworkDiskCache>
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPainterPath>
 #include <QProxyStyle>
+#include <QGraphicsBlurEffect>
+#include <QGraphicsPixmapItem>
+#include <QGraphicsScene>
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
@@ -531,6 +535,60 @@ QColor moodColor(const QPixmap &cover) {
 QColor washFrom(const QColor &mood) {
     if (!mood.isValid()) return theme::highlight;
     return QColor::fromHslF(mood.hslHueF(), std::min(mood.hslSaturationF(), 0.55f), 0.24f);
+}
+
+QVector<QColor> coverPalette(const QPixmap &cover, int count) {
+    // Vivid pixels vote for one of twelve hue slices, weighted by how vivid they are; each
+    // winning slice gives its average colour.
+    QImage img = cover.toImage().scaled(24, 24, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    struct Slice { double weight = 0, r = 0, g = 0, b = 0; };
+    std::array<Slice, 12> slices{};
+    double total = 0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            QColor c = img.pixelColor(x, y);
+            double w = c.hsvSaturationF() * c.valueF();
+            if (w < 0.15 || c.hsvHue() < 0) continue;
+            auto &s = slices[c.hsvHue() / 30];
+            s.weight += w, s.r += c.redF() * w, s.g += c.greenF() * w, s.b += c.blueF() * w;
+            total += w;
+        }
+    std::array<int, 12> order;
+    for (int i = 0; i < 12; ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return slices[a].weight > slices[b].weight; });
+    QVector<QColor> out;
+    for (int i : order) {
+        const auto &s = slices[i];
+        if (out.size() == count || s.weight < 0.08 * total || s.weight == 0) break;
+        QColor c = QColor::fromRgbF(s.r / s.weight, s.g / s.weight, s.b / s.weight);
+        out << QColor::fromHslF(c.hslHueF(), std::clamp(c.hslSaturationF(), 0.35f, 0.8f),
+                                std::clamp(c.lightnessF(), 0.55f, 0.72f));
+    }
+    if (out.isEmpty()) out << QColor(0xD0, 0xD0, 0xD0);
+    return out;
+}
+
+QImage blurred(const QImage &src, qreal radius) {
+    // Blur a copy padded with its own edge pixels, then crop: Qt fades the borders otherwise.
+    int pad = int(std::ceil(radius * 2));
+    QImage padded(src.width() + 2 * pad, src.height() + 2 * pad, QImage::Format_ARGB32_Premultiplied);
+    padded.fill(Qt::transparent);  // a new QImage holds whatever memory it was given
+    {
+        QPainter p(&padded);
+        p.drawImage(QRect(0, 0, padded.width(), padded.height()), src);  // stretched: edges extend
+        p.drawImage(pad, pad, src);
+    }
+    QGraphicsScene scene;
+    auto *item = scene.addPixmap(QPixmap::fromImage(padded));
+    auto *blur = new QGraphicsBlurEffect;  // owned by the item
+    blur->setBlurRadius(radius);
+    blur->setBlurHints(QGraphicsBlurEffect::QualityHint);
+    item->setGraphicsEffect(blur);
+    QImage out(src.size(), QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    scene.render(&p, QRectF(0, 0, src.width(), src.height()), QRectF(pad, pad, src.width(), src.height()));
+    return out;
 }
 
 // Small on purpose: every view keeps its own scaled copy, so this only bridges repeat loads.

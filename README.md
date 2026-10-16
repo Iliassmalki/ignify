@@ -69,7 +69,10 @@ ignify itself and one for librespot. Both are remembered after that:
 - **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
 - **Back and forward** between pages: the arrows by the logo, or Alt+Left / Alt+Right.
 - **Mini player** (Ctrl+M): a small always-on-top window with controls on hover.
-- **Full screen** (F11): large cover on a blurred backdrop. Esc leaves.
+- **Full screen** (F11): the cover over a soft-focus copy of itself, made from the 640 px
+  image, with a calm spectrum along the floor in the cover's own colours. Esc leaves. The
+  bars rise gently and fall slowly. They only listen while full screen is open and the music
+  plays on this computer: `parec` reads the speaker output, and only bar heights are kept.
 - **Media keys and the desktop's sound menu** work through MPRIS (D-Bus).
 - **F1** lists every keyboard shortcut. Double-click or press Enter on a song to play it;
   Space plays or pauses.
@@ -117,7 +120,7 @@ change.
 
 | measured | budget | official Spotify (same laptop) |
 |---|---|---|
-| binary 0.86 MB | 1 MB | 347 MB install |
+| binary 0.88 MB | 1 MB | 347 MB install |
 | memory 47 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
 | CPU ~1% (+~2% librespot) while playing | 3% | 23% idle on the home screen |
 
@@ -167,6 +170,9 @@ errors and no leaks. Hostile data was replayed with `MOCK_EVIL=1` and `MOCK_FOLL
 - **Secrets**: the refresh token lives in `~/.config/ignify/` (folder 0700, file 0600), and
   librespot's saved login in `~/.cache/ignify/` (folder 0700). Cached track lists (what you
   listen to) sit in an owner-only folder too.
+- **The spectrum** reads the default output's monitor through `parec` only while full screen
+  is open and the music plays here; samples stay in memory (the latest 93 ms) and nothing is
+  recorded or sent. Another app's sound shows in the bars too while it plays.
 - **Sign-in**: PKCE with a `state` check, and a loopback server on 127.0.0.1 only.
 - **Shutdown**: librespot gets SIGINT so it leaves Spotify Connect cleanly, and is only
   killed after 3 s.

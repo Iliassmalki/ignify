@@ -44,6 +44,11 @@ QPixmap appIcon(int size, qreal dpr);      // ignify's own mark: a green flame o
 // The cover's most vivid colour; tints the now-playing panel like Spotify's own view.
 QColor moodColor(const QPixmap &cover);
 QColor washFrom(const QColor &mood);  // now-playing panel tint
+// Up to `count` of the cover's own colours, most present first, lifted to read on a dark
+// background. Never empty: a grey or black-and-white cover gives a soft grey.
+QVector<QColor> coverPalette(const QPixmap &cover, int count);
+// A smooth Gaussian-quality blur (Qt's own, through QGraphicsBlurEffect). Edges stay solid.
+QImage blurred(const QImage &src, qreal radius);
 
 // Downloads each image once: in-flight requests are shared, results kept in RAM and on disk.
 class ImageCache : public QObject {
