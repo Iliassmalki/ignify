@@ -13,11 +13,16 @@ public:
     using QObject::QObject;
     using Callback = std::function<void(const QJsonObject &)>;
     using PageCallback = std::function<bool(const QJsonObject &)>;  // return false to stop paging
+    // Called instead of the status-bar message when a caller wants to explain a refusal itself.
+    using ErrorCallback = std::function<void(int status, const QString &message)>;
 
     void login();
-    void get(const QString &path, Callback cb = {}) { send("GET", path, {}, std::move(cb)); }
-    void send(const QByteArray &verb, const QString &path, const QJsonObject &body = {}, Callback cb = {});
-    void getAll(const QString &path, PageCallback onPage);  // follows "next" links
+    void get(const QString &path, Callback cb = {}, ErrorCallback onError = {}) {
+        send("GET", path, {}, std::move(cb), std::move(onError));
+    }
+    void send(const QByteArray &verb, const QString &path, const QJsonObject &body = {}, Callback cb = {},
+              ErrorCallback onError = {});
+    void getAll(const QString &path, PageCallback onPage, ErrorCallback onError = {});  // follows "next" links
     bool signingIn() const { return busy; }
 
 signals:

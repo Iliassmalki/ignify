@@ -101,12 +101,13 @@ DEVICES = [
     {"id": "dev-speaker", "name": "Living Room", "type": "Speaker", "is_active": False, "is_restricted": True,
      "supports_volume": True, "volume_percent": 30},
 ]
-PLAYLISTS = [(n, "spotify" if os.environ.get("MOCK_FOLLOWED_ONLY") == "1" else "me") for n in ["Late Night Code", "Gym", "Darija Bangers", "Focus", "Road Trip", "Chill Sunday"]]
+PLAYLISTS = [(n, "spotify" if os.environ.get("MOCK_FOLLOWED_ONLY") == "1" else "me") for n in ["Late Night Code", "Gym 🔥", "Darija Bangers", "Focus", "Road Trip", "Chill Sunday"]]
 PLAYLISTS.append(("Today's Top Hits", "spotify"))  # followed, not editable
+PLAYLISTS.append(("Panic Attack 🧜‍♀️", "Zineb"))  # followed, emoji in the name
 if EVIL:  # a followed playlist's name is written by someone else
     PLAYLISTS.append((f'<img src="{LOCAL_IMG}"><span style="font-size:60px;color:red">PWNED</span>', "stranger"))
 LIKED = {"spotify:track:0-3"}
-PLAYER = {"shuffle": False, "repeat": "off", "queue": [track(0, n) for n in range(2, 8)]}
+PLAYER = {"shuffle": False, "repeat": "off", "context": "spotify:album:al0", "queue": [track(0, n) for n in range(2, 8)]}
 STARTED, READY = time.time(), False
 
 
@@ -157,7 +158,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/me/playlists":
             return self.send_json({"next": None, "items": [
                 {"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": n, "collaborative": False,
-                 "owner": {"id": owner, "display_name": "Iliass" if owner == "me" else "Spotify"},
+                 "owner": {"id": owner, "display_name": "Iliass" if owner == "me" else owner.title()}, "public": i % 2 == 0,
                  "items": {"total": 10}, "images": images(i + 3)} for i, (n, owner) in enumerate(PLAYLISTS)]})
         if m := re.fullmatch(r"/v1/playlists/pl(\d+)", path):  # playlist metadata
             i = int(m[1])
@@ -184,8 +185,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"items": [{"id": f"ar{i}", "name": ARTISTS[i], "uri": f"spotify:artist:ar{i}",
                                                   "images": images(40 + i)} for i in range(len(ARTISTS))]})
             return self.send_json({"items": [track(i % 12, (i * 3) % 10) for i in range(10)]})
+        if m := re.fullmatch(r"/v1/playlists/pl(\d+)/items", path):  # 2026: owner/collaborator only
+            i = int(m[1])
+            if i < len(PLAYLISTS) and PLAYLISTS[i][1] != "me":
+                return self.send_json({"error": {"status": 403, "message": "Forbidden"}}, 403)
         if path == "/v1/me/tracks" or path.startswith("/v1/playlists/"):
-            return self.send_json({"total": 10, "next": None, "items": [{"track": track(n, n)} for n in range(10)]})
+            return self.send_json({"total": 10, "next": None, "items": [{"track": track(n, n), "added_at": f"2025-0{n % 9 + 1}-1{n}T10:00:00Z"}
+                                                                        for n in range(10)]})
         if m := re.fullmatch(r"/v1/albums/al(\d+)/tracks", path):
             a = int(m[1])
             return self.send_json({"next": None, "items": [{k: v for k, v in track(a, n).items() if k != "album"}
@@ -215,7 +221,7 @@ class Handler(BaseHTTPRequestHandler):
             item = track(0, 1)
             return self.send_json({"is_playing": True, "device": active, "item": item,
                                    "shuffle_state": PLAYER["shuffle"], "repeat_state": PLAYER["repeat"],
-                                   "context": {"type": "album", "uri": "spotify:album:al0"},
+                                   "context": {"type": PLAYER["context"].split(":")[1], "uri": PLAYER["context"]},
                                    "progress_ms": int((time.time() - STARTED) * 1000) % item["duration_ms"]})
         if path == "/lrclib/api/get":
             if "Waves" in q.get("track_name", ""):
@@ -269,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
             LIKED.update(self.uris())
             return self.empty(200)
         state = parse_qs(urlparse(self.path).query).get("state", [""])[0]
+        if path == "/v1/me/player/play" and body and "context_uri" in json.loads(body):
+            PLAYER["context"] = json.loads(body)["context_uri"]
         if path == "/v1/me/player/shuffle":
             PLAYER["shuffle"] = state == "true"
         if path == "/v1/me/player/repeat":

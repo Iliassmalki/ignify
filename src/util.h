@@ -3,6 +3,8 @@
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QDateTime>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QStringList>
 #include <algorithm>
@@ -114,3 +116,18 @@ inline QString artistLinks(const QJsonArray &artists, const QString &color) {
     }
     return out.join(", ");
 }
+
+// Spotify's total-length wording: "3 hr 39 min" for long lists, "38 min 12 sec" for short ones.
+inline QString formatLength(qint64 ms) {
+    qint64 s = ms / 1000, h = s / 3600, m = s % 3600 / 60;
+    return h ? QString("%1 hr %2 min").arg(h).arg(m) : QString("%1 min %2 sec").arg(m).arg(s % 60);
+}
+
+// "2024-05-25T10:00:00Z" -> "May 25, 2024" (English, like the rest of the UI); empty if unknown.
+inline QString formatAdded(const QString &iso) {
+    QDateTime t = QDateTime::fromString(iso, Qt::ISODate);
+    return t.isValid() ? QLocale(QLocale::English).toString(t.date(), "MMM d, yyyy") : QString();
+}
+
+// "1,599" style counts.
+inline QString formatCount(qint64 n) { return QLocale(QLocale::English).toString(n); }

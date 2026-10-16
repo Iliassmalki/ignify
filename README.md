@@ -52,8 +52,14 @@ ignify itself and one for librespot. Both are remembered after that:
   header, Home) for their songs and discography (albums, singles and EPs).
 - **Albums**: your saved albums, with filter and sort (recently added, alphabetical, artist).
 - **Your Library**: search it, sort it (recents, alphabetical, creator), and create playlists.
-- **Playlists**: double-click to play. Spotify only lets apps list the songs of
-  playlists you own or collaborate on (2026 API rules). Playlists you follow still play.
+- **Playlists and albums** are laid out like Spotify's: a header in the cover's colour,
+  owner, song count and length, then play, shuffle and "…" (queue it all, add it all to a
+  playlist), search in the list, and a sort (custom order, title, artist, album, date
+  added, duration). Rows show the album thumbnail, artist, album, date added and length.
+  Double-click a song to play; click the grey artist name to open the artist.
+- **Playlists you follow**: Spotify only lets apps list the songs of playlists you own or
+  collaborate on (2026 API rules), and answers anything else with 403. ignify says so on
+  the page. Press play and the songs fill in from Spotify's queue as it plays.
 - **Queue**: the queue button shows Now playing, "Next from" the album or playlist, and a
   Recently played tab. Right-click songs to add them to the queue.
 - **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
@@ -107,8 +113,8 @@ change.
 
 | measured | budget | official Spotify (same laptop) |
 |---|---|---|
-| binary 0.76 MB | 1 MB | 347 MB install |
-| memory 45 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
+| binary 0.84 MB | 1 MB | 347 MB install |
+| memory 47 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
 | CPU ~1% (+~2% librespot) while playing | 3% | 23% idle on the home screen |
 
 Covers are only kept near the visible part of the grid. Loading every cover up front cost

@@ -143,10 +143,10 @@ void Api::requestToken(const QUrlQuery &form, bool isRefresh) {
     });
 }
 
-void Api::send(const QByteArray &verb, const QString &path, const QJsonObject &body, Callback cb) {
+void Api::send(const QByteArray &verb, const QString &path, const QJsonObject &body, Callback cb, ErrorCallback onError) {
     // Wall-clock expiry also covers waking from suspend with a stale token.
     if (accessToken.isEmpty() || QDateTime::currentDateTimeUtc() >= expiresAt) {
-        waiting << [=] { send(verb, path, body, cb); };
+        waiting << [=] { send(verb, path, body, cb, onError); };
         refresh();
         return;
     }
@@ -169,23 +169,25 @@ void Api::send(const QByteArray &verb, const QString &path, const QJsonObject &b
         reply->deleteLater();
         if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 429) {
             int wait = std::max(1, reply->rawHeader("Retry-After").toInt());
-            QTimer::singleShot(wait * 1000, this, [=] { send(verb, path, body, cb); });
+            QTimer::singleShot(wait * 1000, this, [=] { send(verb, path, body, cb, onError); });
             return;
         }
         auto doc = QJsonDocument::fromJson(reply->readAll());
         // Some endpoints answer with a bare array (e.g. library/contains); hand it over as {"items": [...]}.
         auto json = doc.isArray() ? QJsonObject{{"items", doc.array()}} : doc.object();
         if (reply->error() != QNetworkReply::NoError) {
-            emit message(json["error"].toObject()["message"].toString(reply->errorString()));
+            QString text = json["error"].toObject()["message"].toString(reply->errorString());
+            if (onError) onError(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), text);
+            else emit message(text);
             return;
         }
         if (cb) cb(json);
     });
 }
 
-void Api::getAll(const QString &path, PageCallback onPage) {
-    get(path, [this, onPage](const QJsonObject &page) {
+void Api::getAll(const QString &path, PageCallback onPage, ErrorCallback onError) {
+    get(path, [this, onPage, onError](const QJsonObject &page) {
         auto next = page["next"].toString();
-        if (onPage(page) && !next.isEmpty()) getAll(next, onPage);
-    });
+        if (onPage(page) && !next.isEmpty()) getAll(next, onPage, onError);
+    }, onError);
 }

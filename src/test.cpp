@@ -71,5 +71,11 @@ int main() {
     QJsonArray hostile{QJsonObject{{"id", "x\" onclick=\"y"}, {"name", "Evil"}}};
     assert(artistLinks(hostile, "#fff") == "Evil");  // a non-base62 id never reaches an href
 
+    assert(formatLength((3 * 3600 + 39 * 60 + 5) * 1000LL) == "3 hr 39 min");
+    assert(formatLength((38 * 60 + 12) * 1000LL) == "38 min 12 sec");
+    assert(formatAdded("2024-05-25T10:00:00Z") == "May 25, 2024");
+    assert(formatAdded("").isEmpty() && formatAdded("not a date").isEmpty());
+    assert(formatCount(1599) == "1,599");
+
     puts("ignify_test: ok");
 }

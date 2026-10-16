@@ -25,7 +25,7 @@ enum { Kind = Qt::UserRole, Uri, Id, Subtitle, Json, Image, Loaded, Order };
 
 enum class Glyph { Play, Pause, Prev, Next, Heart, HeartOutline, Plus, Check, Grid, Volume, Devices, Computer, Phone,
                    Speaker, Mic, Shuffle, Repeat, RepeatOne, Queue, MiniPlayer, FullScreen, Home, Back, Forward,
-                   Search, Sort, Close };
+                   Search, Sort, Close, Clock, More };
 QIcon glyphIcon(Glyph g, const QColor &color, int size = 24);
 void paintGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box);
 // Spotify's on/off controls (shuffle, repeat, queue): green with a dot underneath when on.
@@ -66,6 +66,15 @@ public:
     static QSize cell() { return {Cover + 2 * Pad, Cover + 2 * Pad + 46}; }
     using QStyledItemDelegate::QStyledItemDelegate;
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override { return cell(); }
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override;
+};
+
+// Spotify's title cell: 40px album thumbnail (when `thumbs`), the title (its ForegroundRole, so
+// the playing song is green) over the artists in grey (Role::Subtitle).
+class TrackTitleDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    bool thumbs = true;
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override;
 };
 

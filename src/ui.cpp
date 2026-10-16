@@ -194,6 +194,15 @@ void drawGlyph(QPainter &p, Glyph g, const QColor &color, const QRectF &box) {
         line({.18, .50}, {.66, .50});
         line({.18, .70}, {.50, .70});
         break;
+    case Glyph::Clock:
+        stroke();
+        p.drawEllipse(QPointF(.50, .50), .36, .36);
+        line({.50, .50}, {.50, .28});
+        line({.50, .50}, {.66, .58});
+        break;
+    case Glyph::More:
+        for (qreal x : {.22, .50, .78}) p.drawEllipse(QPointF(x, .50), .07, .07);
+        break;
     case Glyph::Close:
         stroke();
         line({.26, .26}, {.74, .74});
@@ -252,6 +261,9 @@ void theme::apply(QApplication &app) {
     pal.setColor(QPalette::Disabled, QPalette::WindowText, subdued);
     app.setPalette(pal);
     app.setFont(QFont("Inter", 10));
+    // Inter has no emoji; without this Qt 6.4 falls back to monochrome or missing glyphs
+    // ("Prog \U0001F9DC" showed a sliver) instead of the colour emoji font fontconfig prefers.
+    for (const char *family : {"Inter", "Inter Display"}) QFont::insertSubstitutions(family, {"Noto Color Emoji"});
 
     // Spotify's layout: black window, rounded #121212 panels, green for the main action.
     // Named tokens, not %1..%n: QString::arg() fills whichever placeholders exist in order,
@@ -299,7 +311,7 @@ QToolButton:hover { background: @highlight; }
 QToolButton:focus { border: 1px solid @subdued; }
 #play { background: @white; border-radius: 20px; }
 #play:hover { background: #F0F0F0; }
-#bigPlay { background: @green; border-radius: 27px; }
+#bigPlay { background: @green; border-radius: 28px; }
 #bigPlay:hover { background: @greenhover; }
 
 QStatusBar { color: @subdued; }
@@ -341,6 +353,13 @@ QMenu::separator { height: 1px; background: #3E3E3E; margin: 4px 8px; }
 #artistScroll, #artistScroll > QWidget, #artistScroll > QWidget > QWidget,
 #sideStack, #sideStack > QWidget { background: transparent; border: none; }
 #kbd { background: @highlight; border-radius: 4px; padding: 3px 8px; font-weight: 700; }
+#listScroll, #listScroll > QWidget, #listScroll > QWidget > QWidget { background: transparent; border: none; }
+#listHead { border-top-left-radius: 8px; border-top-right-radius: 8px; }
+#trackTable::item { height: 56px; }
+#sortText { background: transparent; color: @subdued; border: none; font-weight: 600; padding: 6px 4px; }
+#sortText:hover { color: @white; }
+#listTitle { font-family: "Inter Display"; font-weight: 800; color: @white; }
+#noteTitle { font-family: "Inter Display"; font-size: 20px; font-weight: 700; }
 )";
     const std::pair<const char *, QColor> tokens[] = {  // longest names first: @greenhover before @green
         {"@greenhover", greenHover}, {"@highlight", highlight}, {"@elevated", elevated}, {"@subdued", subdued},
@@ -628,5 +647,46 @@ void RowDelegate::paint(QPainter *p, const QStyleOptionViewItem &opt, const QMod
     p->setPen(theme::subdued);
     p->drawText(QRect(textX, r.y() + 29, textW, 20), Qt::AlignLeft | Qt::AlignVCenter,
                 QFontMetrics(f).elidedText(idx.data(Role::Subtitle).toString(), Qt::ElideRight, textW));
+    p->restore();
+}
+
+void TrackTitleDelegate::paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &idx) const {
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, idx);
+    QString title = opt.text;
+    opt.text.clear();
+    opt.icon = QIcon();
+    const QWidget *w = option.widget;
+    (w ? w->style() : QApplication::style())->drawControl(QStyle::CE_ItemViewItem, &opt, p, w);  // hover / selection
+
+    p->save();
+    p->setRenderHint(QPainter::Antialiasing);
+    QRect r = option.rect;
+    int x = r.x() + 4;
+    if (thumbs) {
+        QRect cover(x, r.y() + (r.height() - 40) / 2, 40, 40);
+        auto pm = idx.data(Qt::DecorationRole).value<QPixmap>();
+        if (pm.isNull()) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(theme::highlight);
+            p->drawRoundedRect(cover, 4, 4);
+        } else {
+            p->drawPixmap(cover, pm);
+        }
+        x = cover.right() + 12;
+    }
+    int width = r.right() - x - 8;
+    QFont f = option.font;
+    f.setWeight(QFont::Medium);
+    p->setFont(f);
+    QVariant fg = idx.data(Qt::ForegroundRole);
+    p->setPen(fg.isValid() ? fg.value<QBrush>().color() : theme::white);
+    p->drawText(QRect(x, r.y() + 8, width, 20), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(title, Qt::ElideRight, width));
+    f.setWeight(QFont::Normal);
+    p->setFont(f);
+    p->setPen(theme::subdued);
+    p->drawText(QRect(x, r.y() + 28, width, 20), Qt::AlignLeft | Qt::AlignVCenter,
+                QFontMetrics(f).elidedText(idx.data(Role::Subtitle).toString(), Qt::ElideRight, width));
     p->restore();
 }
