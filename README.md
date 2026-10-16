@@ -73,6 +73,8 @@ ignify itself and one for librespot. Both are remembered after that:
   image, with a calm spectrum along the floor in the cover's own colours. Esc leaves. The
   bars rise gently and fall slowly. They only listen while full screen is open and the music
   plays on this computer: `parec` reads the speaker output, and only bar heights are kept.
+  When it plays on another device (your phone), there's no sound here to read, so the bars
+  drift on their own in slow waves: decorative, not the audio.
 - **Media keys and the desktop's sound menu** work through MPRIS (D-Bus).
 - **F1** lists every keyboard shortcut. Double-click or press Enter on a song to play it;
   Space plays or pauses.

@@ -44,6 +44,15 @@ int main() {
     assert(bands[0] < 0.1f && bands[47] < 0.1f);  // 40 Hz and 14 kHz stay dark
     for (float v : spectrumBands(quiet, 44100, 48)) assert(v == 0);
 
+    // ambientBands: always visible but never full, and it moves
+    auto now = ambientBands(0, 56), later = ambientBands(1, 56);
+    bool moved = false;
+    for (int i = 0; i < 56; ++i) {
+        assert(now[i] > 0.05f && now[i] < 0.8f);
+        moved |= std::abs(now[i] - later[i]) > 0.01f;
+    }
+    assert(moved);
+
     assert(joinNames(QJsonArray{QJsonObject{{"name", "A"}}, QJsonObject{{"name", "B"}}}) == "A, B");
 
     auto img = [](int w, const char *url) { return QJsonObject{{"width", w}, {"url", url}}; };

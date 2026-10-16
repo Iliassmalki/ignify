@@ -133,6 +133,7 @@ FullScreenView::FullScreenView(QWidget *owner)
     setCursor(Qt::ArrowCursor);
     frames->setInterval(42);  // 24 fps is plenty for bars that move this slowly
     connect(frames, &QTimer::timeout, this, [this] { tick(); });
+    clock.start();
 }
 
 void FullScreenView::setState(const NowPlaying &s) {
@@ -141,7 +142,12 @@ void FullScreenView::setState(const NowPlaying &s) {
         colors = coverPalette(s.cover, 3);
     }
     state = s;
-    listen(isVisible() && s.playing && s.local);
+    bool playing = isVisible() && s.playing;
+    listen(playing && s.local);
+    // No sound to read here (it plays on the phone, or parec is missing): the bars still move,
+    // gently and on their own, in the cover's colours.
+    ambient = playing && !capture;
+    if (ambient) frames->start();
     update();
 }
 
@@ -247,6 +253,8 @@ void FullScreenView::tick() {
         std::vector<float> samples(kWindow);
         for (int i = 0; i < kWindow; ++i) samples[i] = raw[i] / 32768.f;
         target = spectrumBands(samples, kRate, kBands);
+    } else if (ambient) {
+        target = ambientBands(clock.elapsed() / 1000.f, kBands);
     }
     float peak = 0;
     qreal height = spectrumRect().height();
@@ -256,14 +264,14 @@ void FullScreenView::tick() {
         float t = .5f * target[i] + .25f * target[std::max(i - 1, 0)] + .25f * target[std::min(i + 1, kBands - 1)];
         float before = levels[i];
         levels[i] += (t - levels[i]) * (t > levels[i] ? .26f : .075f);
-        if (!capture && levels[i] < .004f) levels[i] = 0;
+        if (!capture && !ambient && levels[i] < .004f) levels[i] = 0;
         peak = std::max(peak, levels[i]);
         qreal a = before * height, b = levels[i] * height;
         if (std::abs(a - b) < .25) continue;
         QRectF hi = barRect(i, std::max(a, b)), lo = barRect(i, std::min(a, b));
         dirty += QRectF(hi.left() - 1, hi.top() - 1, hi.width() + 2, lo.top() - hi.top() + hi.width() / 2 + 2).toAlignedRect();
     }
-    if (!capture && peak == 0) frames->stop();
+    if (!capture && !ambient && peak == 0) frames->stop();
     if (!dirty.isEmpty()) update(dirty);
 }
 
@@ -358,6 +366,7 @@ void FullScreenView::closeEvent(QCloseEvent *e) {
 
 void FullScreenView::hideEvent(QHideEvent *) {
     listen(false);  // never listen while nobody is looking
+    ambient = false;
     frames->stop();
     std::fill(levels.begin(), levels.end(), 0.f);
 }

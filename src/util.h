@@ -106,6 +106,21 @@ inline std::vector<float> spectrumBands(const std::vector<float> &samples, int r
     return out;
 }
 
+// Decorative levels 0..1 for when there's no sound to read (the music plays on another device):
+// slow overlapping waves that never quite repeat, under the shape music usually has, fuller
+// in the low mids and softer in the treble.
+inline std::vector<float> ambientBands(float seconds, int bands) {
+    std::vector<float> out(bands);
+    for (int i = 0; i < bands; ++i) {
+        float x = float(i) / float(std::max(1, bands - 1)), b = float(i);
+        float shape = .3f + .45f * std::exp(-std::pow((x - .3f) / .35f, 2.f));
+        float wave = .5f * std::sin(seconds * .9f + b * .45f) + .3f * std::sin(seconds * 1.7f - b * .23f + 1.3f) +
+                     .2f * std::sin(seconds * .37f + b * .9f);  // -1..1
+        out[i] = shape * (.35f + .65f * (.5f + .5f * wave));
+    }
+    return out;
+}
+
 inline QString joinNames(const QJsonArray &artists) {
     QStringList names;
     for (const auto &a : artists) names << a.toObject()["name"].toString();

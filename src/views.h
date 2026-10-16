@@ -3,6 +3,7 @@
 // Spotify's always-on-top mini player and its full-screen now-playing view.
 #include <QColor>
 #include <QPixmap>
+#include <QElapsedTimer>
 #include <QVector>
 #include <QWidget>
 #include <functional>
@@ -72,7 +73,9 @@ private:
     QRectF closeRect, prevRect, playRect, nextRect;
     QVector<QColor> colors;       // the cover's palette, left to right across the bars
     QProcess *capture = nullptr;  // parec reading what the speakers play, only while shown and playing here
+    bool ambient = false;         // playing elsewhere (or no parec): decorative bars instead
     QByteArray pcm;               // the latest samples, s16le mono
     QTimer *frames;
+    QElapsedTimer clock;          // drives the decorative bars
     std::vector<float> levels;    // what each bar shows now, eased towards the spectrum
 };
