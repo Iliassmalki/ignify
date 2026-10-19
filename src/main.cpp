@@ -116,6 +116,8 @@ public:
         showIdle();
         tintPanel({});
         updateHistoryButtons();
+        // Home from the cache straight away; its requests wait for sign-in, then refresh it.
+        nav->setCurrentRow(0);
     }
 
     ~Window() override {
@@ -1281,8 +1283,8 @@ private:
         nowCoverUrl = url;
         covers.load(url, this, [this, url](const QPixmap &pm) {
             if (url != nowCoverUrl) return;  // skipped ahead meanwhile
-            npCover->setPixmap(rounded(pm, 268, 10, dpr()));
-            barCover->setPixmap(rounded(pm, 56, 4, dpr()));
+            crossFade(npCover, rounded(pm, 268, 10, dpr()));
+            crossFade(barCover, rounded(pm, 56, 4, dpr()));
             nowCover = pm;
             nowMood = moodColor(pm);
             tintPanel(nowMood);
@@ -1290,6 +1292,35 @@ private:
         });
         if (full && full->isVisible()) loadBigCover();
         pushMpris();
+    }
+
+    // The next song's cover fades in over the last one, as in Spotify, instead of cutting.
+    static void crossFade(QLabel *label, const QPixmap &to, int ms = 450) {
+        if (auto *running = label->findChild<QVariantAnimation *>("fade", Qt::FindDirectChildrenOnly)) {
+            running->setObjectName({});
+            running->stop();  // deletes itself; the new fade starts from the frame on screen
+        }
+        QPixmap from = label->pixmap();
+        if (from.isNull() || from.size() != to.size() || from.cacheKey() == to.cacheKey()) return label->setPixmap(to);
+        auto *fade = new QVariantAnimation(label);
+        fade->setObjectName("fade");
+        fade->setDuration(ms);
+        fade->setStartValue(0.0);
+        fade->setEndValue(1.0);
+        fade->setEasingCurve(QEasingCurve::InOutQuad);
+        connect(fade, &QVariantAnimation::valueChanged, label, [label, from, to](const QVariant &v) {
+            QPixmap frame(to.size());
+            frame.setDevicePixelRatio(to.devicePixelRatio());
+            frame.fill(Qt::transparent);
+            QPainter p(&frame);
+            p.drawPixmap(0, 0, from);
+            p.setOpacity(v.toReal());
+            p.drawPixmap(0, 0, to);
+            p.end();
+            label->setPixmap(frame);
+        });
+        connect(fade, &QVariantAnimation::finished, label, [label, to] { label->setPixmap(to); });
+        fade->start(QAbstractAnimation::DeleteWhenStopped);
     }
 
     void showIdle() {
@@ -1916,33 +1947,51 @@ private:
         return homePage;
     }
 
+    // Home shows at once from how it looked last time (the list cache, on disk), then each of its
+    // three parts is asked again and redrawn only if it changed.
     void loadHome() {
         homeLoadedAt.start();
         int gen = ++homeGen;
-        while (auto *item = shortcutGrid->takeAt(0)) {
-            delete item->widget();
-            delete item;
-        }
-        homeArtists->clear();
-        homeSongs->clear();
-        homeSongUris.clear();
-        homeEmpty->hide();
+        auto part = [this, gen](const QString &id, const QString &path, std::function<QJsonArray(const QJsonObject &)> pick,
+                                std::function<void(const QJsonArray &)> draw) {
+            QJsonArray cached = cachedList(id);
+            bool shown = !cached.isEmpty();
+            if (shown) draw(cached);
+            api->get(path, [=](const QJsonObject &o) {
+                if (gen != homeGen) return;
+                QJsonArray fresh = pick(o);
+                if (shown && fresh == cached) return;
+                storeList(id, fresh);
+                draw(fresh);
+            });
+        };
         // Spotify's shortcut grid: the albums and playlists you played most recently.
-        api->get("/me/player/recently-played?limit=50", [this, gen](const QJsonObject &o) {
-            if (gen != homeGen) return;
-            QStringList seen;
+        part("home:recent", "/me/player/recently-played?limit=50", [](const QJsonObject &o) {
+            QJsonArray uris;
             for (const auto &v : o["items"].toArray()) {
                 QString uri = v.toObject()["context"].toObject()["uri"].toString();
-                if (uri.isEmpty() || seen.contains(uri)) continue;
-                seen << uri;
-                addShortcut(uri, int(seen.size()) - 1);
-                if (seen.size() == 8) break;
+                if (!uri.isEmpty() && !uris.contains(uri)) uris << uri;
+                if (uris.size() == 8) break;
             }
-            homeEmpty->setVisible(seen.isEmpty() && homeArtists->count() == 0);
+            return uris;
+        }, [this](const QJsonArray &uris) {
+            while (auto *item = shortcutGrid->takeAt(0)) {
+                delete item->widget();
+                delete item;
+            }
+            for (int i = 0; i < uris.size(); ++i) addShortcut(uris[i].toString(), i);
+            homeEmpty->setVisible(uris.isEmpty() && homeArtists->count() == 0);
         });
-        api->get("/me/top/artists?limit=10&time_range=short_term", [this, gen](const QJsonObject &o) {
-            if (gen != homeGen) return;
+        part("home:artists", "/me/top/artists?limit=10&time_range=short_term", [](const QJsonObject &o) {
+            QJsonArray artists;
             for (const auto &v : o["items"].toArray()) {
+                auto a = v.toObject();
+                artists << QJsonObject{{"id", a["id"]}, {"name", a["name"]}, {"images", a["images"]}};
+            }
+            return artists;
+        }, [this](const QJsonArray &artists) {
+            homeArtists->clear();
+            for (const auto &v : artists) {
                 auto a = v.toObject();
                 auto *it = new QListWidgetItem(a["name"].toString(), homeArtists);
                 it->setData(Role::Subtitle, "Artist");
@@ -1954,9 +2003,14 @@ private:
             homeArtistsTitle->setVisible(homeArtists->count() > 0);
             fitGrid(homeArtists);
         });
-        api->get("/me/top/tracks?limit=10&time_range=short_term", [this, gen](const QJsonObject &o) {
-            if (gen != homeGen) return;
-            for (const auto &v : o["items"].toArray()) {
+        part("home:songs", "/me/top/tracks?limit=10&time_range=short_term", [](const QJsonObject &o) {
+            QJsonArray songs;
+            for (const auto &v : o["items"].toArray()) songs << unwrapTrack(compactEntry(v.toObject()));
+            return songs;
+        }, [this](const QJsonArray &songs) {
+            homeSongs->clear();
+            homeSongUris.clear();
+            for (const auto &v : songs) {
                 auto t = v.toObject();
                 auto *it = new QListWidgetItem(t["name"].toString(), homeSongs);
                 it->setData(Role::Subtitle, joinNames(t["artists"].toArray()));
@@ -1967,6 +2021,18 @@ private:
             homeSongsTitle->setVisible(homeSongs->count() > 0);
             fitGrid(homeSongs);
         });
+    }
+
+    // A shortcut's album/playlist/artist, trimmed to what the tile and the page it opens use
+    // (the full objects carry a page of tracks).
+    static QJsonObject shortcutMeta(const QJsonObject &o) {
+        QJsonObject keep;
+        for (auto field : {"id", "uri", "name", "images", "artists", "release_date", "total_tracks", "album_type",
+                           "owner", "public", "collaborative"})
+            if (o.contains(field)) keep[field] = o[field];
+        for (auto field : {"items", "tracks"})
+            if (o.contains(field)) keep[field] = QJsonObject{{"total", o[field].toObject()["total"]}};
+        return keep;
     }
 
     void addShortcut(const QString &uri, int index) {
@@ -1992,16 +2058,32 @@ private:
             guard->onClick = std::move(open);
             covers.load(imageUrl(images, 112), guard, [this, cover](const QPixmap &pm) { cover->setPixmap(rounded(pm, 56, 4, dpr())); });
         };
-        QString id = uri.section(':', 2);
-        if (uri.startsWith("spotify:album:"))
-            api->get("/albums/" + id, [this, fill](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, a] { openAlbum(a); }); });
-        else if (uri.startsWith("spotify:playlist:"))
-            api->get("/playlists/" + id, [this, fill](const QJsonObject &pl) {
+        QString id = uri.section(':', 2), path;
+        std::function<void(const QJsonObject &)> show;
+        if (uri.startsWith("spotify:album:")) {
+            path = "/albums/" + id;
+            show = [this, fill](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, a] { openAlbum(a); }); };
+        } else if (uri.startsWith("spotify:playlist:")) {
+            path = "/playlists/" + id;
+            show = [this, fill](const QJsonObject &pl) {
                 fill(pl["name"].toString(), pl["images"].toArray(), [this, pl] { go([this, pl] { showNav(Playlist, pl); }); });
-            });
-        else if (uri.startsWith("spotify:artist:"))
-            api->get("/artists/" + id, [this, fill, id](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, id] { openArtist(id); }); });
-        else if (uri.endsWith(":collection")) {
+            };
+        } else if (uri.startsWith("spotify:artist:")) {
+            path = "/artists/" + id;
+            show = [this, fill, id](const QJsonObject &a) { fill(a["name"].toString(), a["images"].toArray(), [this, id] { openArtist(id); }); };
+        }
+        if (show) {  // cached tile first; albums never change, the others are checked again
+            QString cacheId = "shortcut:" + uri;
+            QJsonObject cached = cachedList(cacheId).at(0).toObject();
+            if (!cached.isEmpty()) show(cached);
+            if (cached.isEmpty() || !uri.startsWith("spotify:album:"))
+                api->get(path, [this, show, cacheId, cached](const QJsonObject &o) {
+                    QJsonObject meta = shortcutMeta(o);
+                    if (meta == cached) return;
+                    storeList(cacheId, QJsonArray{meta});
+                    show(meta);
+                });
+        } else if (uri.endsWith(":collection")) {
             Glyph heart = Glyph::Heart;
             cover->setPixmap(tile(56, 4, dpr(), likedFrom, theme::white, &heart, likedTo));
             name->setText("Liked Songs");
@@ -2293,10 +2375,18 @@ private:
         int gen = ++queueGen;
         queueList->clear();
         queueEmpty->clear();
-        if (recentTab->isChecked()) {
-            api->get("/me/player/recently-played?limit=50", [this, gen](const QJsonObject &o) {
+        if (recentTab->isChecked()) {  // the last list at once, then Spotify's, redrawn if it moved on
+            QJsonArray cached = cachedList("queue:recent");
+            for (const auto &v : cached) addQueueRow(v.toObject(), 0);
+            api->get("/me/player/recently-played?limit=50", [this, gen, cached](const QJsonObject &o) {
                 if (gen != queueGen) return;
-                for (const auto &v : o["items"].toArray()) addQueueRow(v.toObject()["track"].toObject(), 0);
+                QJsonArray fresh;
+                for (const auto &v : o["items"].toArray()) fresh << unwrapTrack(compactEntry(v.toObject()["track"].toObject()));
+                if (fresh != cached || cached.isEmpty()) {
+                    storeList("queue:recent", fresh);
+                    queueList->clear();
+                    for (const auto &v : fresh) addQueueRow(v.toObject(), 0);
+                }
                 queueEmpty->setText(queueList->count() ? QString() : "Songs you play show up here.");
             });
             return;
@@ -2376,7 +2466,12 @@ private:
     // ---- mini player, full screen, media keys ---------------------------------------
 
     Transport transport() {
-        return {[this] { playPause->click(); }, [this] { prevButton->click(); }, [this] { nextButton->click(); }, {}};
+        Transport t{[this] { playPause->click(); }, [this] { prevButton->click(); }, [this] { nextButton->click(); }, {}};
+        t.seek = [this](qint64 ms) {
+            seekTo(std::clamp<qint64>(ms, 0, seek->maximum()));
+            advanceProgress();  // the bar and both views jump now, not at the next poll
+        };
+        return t;
     }
 
     void toggleMini() {
@@ -2410,6 +2505,7 @@ private:
         covers.load(url, this, [this, url](const QPixmap &pm) {
             if (url == imageUrl(nowAlbum["images"].toArray(), 640)) {
                 bigCover = pm;
+                bigCoverUrl = url;
                 pushNowPlaying();
             }
         });
@@ -2424,7 +2520,10 @@ private:
         pushedSecond = s.position / 1000;
         if (miniOn) mini->setState(s);
         if (fullOn) {
-            if (!bigCover.isNull() && !nowItem.isEmpty()) s.cover = bigCover;
+            // The 640 px copy only once it is this song's; until then the panel's (the old song's
+            // big cover lingering is what kept full screen on the previous picture).
+            if (!bigCover.isNull() && !nowItem.isEmpty() && bigCoverUrl == imageUrl(nowAlbum["images"].toArray(), 640))
+                s.cover = bigCover;
             full->setState(s);
         }
     }
@@ -2580,6 +2679,7 @@ private:
     FullScreenView *full = nullptr;
     Mpris *mpris = nullptr;
     QPixmap nowCover, bigCover;
+    QString bigCoverUrl;
     QColor nowMood;
     QString nowScale;  // the playing song's scale and tempo, when known
     int nowBpm = 0;

@@ -61,6 +61,7 @@ private:
     QNetworkAccessManager net;
     QCache<QString, QPixmap> memory;  // cost in KB
     QHash<QString, QList<QPair<QPointer<QObject>, Done>>> pending;
+    void fetch(const QString &url, int attempt);
 };
 
 // Album grid cell: cover, bold title, muted artist; no box around it.

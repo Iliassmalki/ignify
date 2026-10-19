@@ -47,7 +47,8 @@ ignify itself and one for librespot. Both are remembered after that:
 ## Using it
 
 - **Home**: shortcuts to the albums and playlists you played last, your top artists and
-  your top songs this month.
+  your top songs this month. It opens instantly, before sign-in even finishes, from how it
+  looked last time, then refreshes the parts that changed.
 - **Artist pages**: click any artist name (now playing, the bar, a song row, an album
   header, Home) for their songs and discography (albums, singles and EPs).
 - **Albums**: your saved albums, with filter and sort (recently added, alphabetical, artist).
@@ -65,7 +66,8 @@ ignify itself and one for librespot. Both are remembered after that:
   collaborate on (2026 API rules), and answers anything else with 403. ignify says so on
   the page. Press play and the songs fill in from Spotify's queue as it plays.
 - **Queue**: the queue button shows Now playing, "Next from" the album or playlist, and a
-  Recently played tab. Right-click songs to add them to the queue.
+  Recently played tab (shown from the cache at once, then refreshed). Right-click songs to
+  add them to the queue.
 - **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
 - **Scale and tempo**: the song panel shows the playing song's scale and BPM ("D♭ major •
   148 BPM"), and every time full screen opens, a pill at the top shows them for three seconds.
@@ -79,7 +81,9 @@ ignify itself and one for librespot. Both are remembered after that:
 - **Back and forward** between pages: the arrows by the logo, or Alt+Left / Alt+Right.
 - **Mini player** (Ctrl+M): a small always-on-top window with controls on hover.
 - **Full screen** (F11): the cover over a soft-focus copy of itself, made from the 640 px
-  image, with a calm spectrum along the floor in the cover's own colours. Esc leaves. The
+  image, with a calm spectrum along the floor in the cover's own colours. Click or drag the
+  progress bar to jump. When the song changes, the picture fades out and the next one fades
+  in (the side panel and bar cross-fade). Esc leaves. The
   bars rise gently and fall slowly. They only listen while full screen is open and the music
   plays on this computer: `parec` reads the speaker output, and only bar heights are kept.
   When it plays on another device (your phone), there's no sound here to read, so the bars

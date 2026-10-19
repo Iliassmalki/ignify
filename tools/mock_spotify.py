@@ -17,6 +17,9 @@ Security test switches (off by default):
   MOCK_DELAY=3          playlist and Liked Songs pages take 3 s, to see what the list cache hides
   MOCK_COVER=photo.png  album 0's cover, to judge the full-screen blur on a real picture
 Also serves ReccoBeats audio features at /recco (IGNIFY_FEATURES=<base>/recco).
+  MOCK_SCOPES="..."     grant only these scopes; endpoints needing others answer 403 like Spotify
+  MOCK_TOKEN_DELAY=3    sign-in takes 3 s
+Next/previous move to another album, so the playing song (and its cover) changes.
 """
 import json, os, re, struct, sys, time, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,10 +37,11 @@ ALBUMS = ["Midnight Drive", "Green Room", "Blue Hour", "Ember", "Lavender Haze",
           "Evergreen", "Red Line", "Harbour Lights", "Neon Bloom", "Soft Focus", "Deep Forest"]
 ARTISTS = ["Nadia K", "The Tidelines", "Oumaima", "Static Hearts", "Lune", "Marrakech Express"]
 SONGS = ["Intro", "Waves", "Afterglow", "Signals", "Paper Moon", "Run", "Closer", "Echoes", "Daylight", "Outro"]
-SCOPES = ("user-read-playback-state user-modify-playback-state playlist-read-private "
+SCOPES = os.environ.get("MOCK_SCOPES", "user-read-playback-state user-modify-playback-state playlist-read-private "
           "playlist-read-collaborative user-library-read user-library-modify "
           "playlist-modify-public playlist-modify-private user-read-currently-playing "
-          "user-read-recently-played user-top-read")
+          "user-read-recently-played user-top-read")  # MOCK_SCOPES: grant fewer, as an old sign-in would
+NEEDS = {"/v1/me/player/recently-played": "user-read-recently-played", "/v1/me/top/": "user-top-read"}
 # Invented for the mock: (Wikipedia title → short description, extract).
 WIKI = {
     "Nadia_K": ("Moroccan singer-songwriter",
@@ -111,7 +115,7 @@ if EVIL:  # a followed playlist's name is written by someone else
     PLAYLISTS.append((f'<img src="{LOCAL_IMG}"><span style="font-size:60px;color:red">PWNED</span>', "stranger"))
 LIKED = {"spotify:track:0-3"}
 ADDED = {}  # playlist index -> uris added through POST, so a re-opened playlist has changed
-PLAYER = {"shuffle": False, "repeat": "off", "context": "spotify:album:al0", "queue": [track(0, n) for n in range(2, 8)]}
+PLAYER = {"now": (0, 1), "shuffle": False, "repeat": "off", "context": "spotify:album:al0", "queue": [track(0, n) for n in range(2, 8)]}
 STARTED, READY = time.time(), False
 
 
@@ -152,6 +156,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/evil/"):
             print("LEAKED", self.headers.get("Authorization"), flush=True)
             return self.send_json({"items": [], "next": None})
+        for prefix, scope in NEEDS.items():  # Spotify refuses what the token wasn't granted
+            if path.startswith(prefix) and scope not in SCOPES.split():
+                return self.send_json({"error": {"status": 403, "message": "Insufficient client scope"}}, 403)
         if path == "/v1/me":
             return self.send_json({"id": "me", "display_name": "Iliass"})
         if path == "/v1/me/albums":
@@ -180,7 +187,7 @@ class Handler(BaseHTTPRequestHandler):
             nxt = f"{BASE}/v1/artists/ar{a}/albums?offset={offset + limit}&limit={limit}" if offset + limit < len(mine) else None
             return self.send_json({"total": len(mine), "next": nxt, "items": mine[offset:offset + limit]})
         if path == "/v1/me/player/queue":
-            return self.send_json({"currently_playing": track(0, 1), "queue": PLAYER["queue"]})
+            return self.send_json({"currently_playing": track(*PLAYER["now"]), "queue": PLAYER["queue"]})
         if path == "/v1/me/player/recently-played":
             return self.send_json({"items": [{"track": track(a, a % 10), "played_at": "2026-10-16T10:00:00Z",
                                               "context": {"type": "album", "uri": f"spotify:album:al{a}"} if a % 2 else
@@ -231,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             active = next((d for d in DEVICES if d["is_active"]), None)
             if not active:
                 return self.empty(204)
-            item = track(0, 1)
+            item = track(*PLAYER["now"])
             return self.send_json({"is_playing": PLAYER.get("playing", True), "device": active, "item": item,
                                    "shuffle_state": PLAYER["shuffle"], "repeat_state": PLAYER["repeat"],
                                    "context": {"type": PLAYER["context"].split(":")[1], "uri": PLAYER["context"]},
@@ -264,6 +271,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
         if self.path == "/api/token":
+            time.sleep(float(os.environ.get("MOCK_TOKEN_DELAY", 0)))  # a slow sign-in, to see Home drawn before it
             print("TOKEN", parse_qs(body).get("grant_type"), flush=True)
             return self.send_json({"access_token": "mock", "expires_in": 3600, "refresh_token": "mock-refresh",
                                    "scope": SCOPES})
@@ -279,6 +287,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"id": f"pl{i}", "uri": f"spotify:playlist:pl{i}", "name": name, "images": [],
                                    "collaborative": False, "owner": {"id": "me", "display_name": "Iliass"},
                                    "items": {"total": 0}}, 201)
+        if path in ("/v1/me/player/next", "/v1/me/player/previous"):  # another album: the cover changes
+            a, n = PLAYER["now"]
+            PLAYER["now"] = ((a + (1 if path.endswith("next") else -1)) % 12, n)
         if path == "/v1/me/player/queue":
             uri = unquote(parse_qs(urlparse(self.path).query).get("uri", [""])[0])
             a, n = (uri.rsplit(":", 1)[1].split("-") + ["0"])[:2]

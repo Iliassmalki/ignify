@@ -26,6 +26,7 @@ struct NowPlaying {
 // Shared by both views: the transport callbacks the main window wires up.
 struct Transport {
     std::function<void()> playPause, previous, next, closed;
+    std::function<void(qint64)> seek;  // milliseconds
 };
 
 class MiniPlayer : public QWidget {
@@ -56,6 +57,8 @@ public:
 protected:
     void paintEvent(QPaintEvent *e) override;
     void mousePressEvent(QMouseEvent *e) override;
+    void mouseMoveEvent(QMouseEvent *e) override;
+    void mouseReleaseEvent(QMouseEvent *e) override;
     void keyPressEvent(QKeyEvent *e) override;
     void closeEvent(QCloseEvent *e) override;
     void hideEvent(QHideEvent *) override;
@@ -72,6 +75,9 @@ private:
     void paintSpectrum(QPainter &p, const QRegion &dirty);
     void paintBubble(QPainter &p);
     QRect bubbleArea() const;
+    QRectF trackRect() const;       // the progress bar
+    bool onTrack(QPointF at) const;  // within easy reach of it
+    qint64 msAt(qreal x) const;
 
     NowPlaying state;
     QPixmap backdrop;  // blurred cover, scrim, shadow and grain at window size; rebuilt per cover/size
@@ -85,5 +91,11 @@ private:
     QTimer *bubbleFrames;         // the BPM and scale bubble's fade, only while it shows
     QElapsedTimer bubbleClock;
     QString flashedFor;           // the track whose bubble already showed since full screen opened
+    bool scrubbing = false, overTrack = false;  // dragging the progress bar / hovering it
+    QPixmap previous;             // the last song's backdrop, fading out
+    QTimer *fadeFrames;
+    QElapsedTimer fadeClock;
+    bool fadePending = false;     // the song changed; fade once its cover arrives
+    qint64 scrubMs = 0;
     std::vector<float> levels;    // what each bar shows now, eased towards the spectrum
 };

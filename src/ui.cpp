@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStyleFactory>
+#include <QTimer>
 
 namespace {
 // Clicking a slider's groove jumps there instead of paging by a few milliseconds.
@@ -605,15 +606,27 @@ void ImageCache::load(const QString &url, QObject *context, Done done) {
     if (auto *pm = memory.object(url)) return done(*pm);
     auto &waiters = pending[url];
     waiters.append({context, std::move(done)});
-    if (waiters.size() > 1) return;  // already downloading
+    if (waiters.size() == 1) fetch(url, 0);  // the first asker downloads; later ones wait for it
+}
+
+void ImageCache::fetch(const QString &url, int attempt) {
     QNetworkRequest req{QUrl(url)};
     req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferCache);
+    // Qt waits forever by default: one stalled download kept that cover, and everyone waiting
+    // for it (the next song's panel), stuck on the old picture for good.
+    req.setTransferTimeout(20'000);
     auto *reply = net.get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url, attempt] {
         reply->deleteLater();
         QPixmap pm;
         // ponytail: decodes on the UI thread (a few ms per cover); move to QtConcurrent if grids stutter
-        if (!pm.loadFromData(reply->readAll())) return void(pending.remove(url));
+        if (!pm.loadFromData(reply->readAll())) {
+            if (attempt == 2) return void(pending.remove(url));  // give up; the next ask starts afresh
+            QTimer::singleShot(1500 * (attempt + 1), this, [this, url, attempt] {
+                if (pending.contains(url)) fetch(url, attempt + 1);
+            });
+            return;
+        }
         memory.insert(url, new QPixmap(pm), pm.width() * pm.height() * 4 / 1024);
         for (auto &[ctx, cb] : pending.take(url))
             if (ctx) cb(pm);

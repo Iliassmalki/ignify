@@ -28,6 +28,7 @@ void transportButtons(QPainter &p, bool playing, QPointF centre, qreal big, QRec
 
 constexpr int kBands = 56, kWindow = 4096, kRate = 44100;  // 4096 samples = 93 ms: calm, fine bass
 constexpr int kBubbleIn = 350, kBubbleHold = 3000, kBubbleMs = 3550;  // fade in, shown for 3 s, fade out
+constexpr int kFadeMs = 900;  // between songs: the old cover fades out, the new one fades in
 
 qreal easeOut(qreal x) { return 1 - std::pow(1 - std::clamp(x, 0.0, 1.0), 3); }
 
@@ -131,12 +132,22 @@ void MiniPlayer::closeEvent(QCloseEvent *e) {
 // ---- full screen -------------------------------------------------------------
 
 FullScreenView::FullScreenView(QWidget *owner)
-    : QWidget(owner, Qt::Window), frames(new QTimer(this)), levels(kBands, 0.f), bubbleFrames(new QTimer(this)) {
+    : QWidget(owner, Qt::Window), frames(new QTimer(this)), levels(kBands, 0.f), bubbleFrames(new QTimer(this)),
+      fadeFrames(new QTimer(this)) {
     setWindowTitle("ignify");
     setCursor(Qt::ArrowCursor);
+    setMouseTracking(true);  // the progress bar shows its thumb on hover
     frames->setInterval(42);  // 24 fps is plenty for bars that move this slowly
     connect(frames, &QTimer::timeout, this, [this] { tick(); });
     clock.start();
+    fadeFrames->setInterval(16);
+    connect(fadeFrames, &QTimer::timeout, this, [this] {
+        if (fadeClock.elapsed() >= kFadeMs) {
+            fadeFrames->stop();
+            previous = {};
+        }
+        update();
+    });
     bubbleFrames->setInterval(16);  // the fade is short: 60 fps for those 3.5 s only
     connect(bubbleFrames, &QTimer::timeout, this, [this] {
         if (bubbleClock.elapsed() > kBubbleMs) bubbleFrames->stop();
@@ -145,7 +156,16 @@ FullScreenView::FullScreenView(QWidget *owner)
 }
 
 void FullScreenView::setState(const NowPlaying &s) {
+    if (!state.id.isEmpty() && s.id != state.id) fadePending = true;  // its cover may come a moment later
     if (s.cover.cacheKey() != state.cover.cacheKey()) {
+        // A new song's cover fades in through the old one; a sharper copy of the same cover
+        // (300 px, then 640 px) just swaps in.
+        if (fadePending && isVisible() && !backdrop.isNull()) {
+            previous = backdrop;
+            fadeClock.start();
+            fadeFrames->start();
+        }
+        fadePending = false;
         backdrop = {};
         colors = coverPalette(s.cover, 3);
     }
@@ -309,6 +329,20 @@ void FullScreenView::paintSpectrum(QPainter &p, const QRegion &dirty) {
     }
 }
 
+QRectF FullScreenView::trackRect() const {
+    const qreal margin = 64;
+    return QRectF(margin + 56, height() - margin - 92, width() - 2 * margin - 112, 4);
+}
+
+bool FullScreenView::onTrack(QPointF at) const {
+    return state.duration > 0 && trackRect().adjusted(-8, -14, 8, 14).contains(at);  // a 4 px bar is hard to hit
+}
+
+qint64 FullScreenView::msAt(qreal x) const {
+    QRectF t = trackRect();
+    return qint64(std::clamp((x - t.left()) / t.width(), 0.0, 1.0) * state.duration);
+}
+
 QRect FullScreenView::bubbleArea() const { return QRect(width() / 2 - 260, 0, 520, 140); }
 
 // A pill at the top: "148 BPM" and "D♭ major", values large, units small in the cover's colour,
@@ -376,7 +410,16 @@ void FullScreenView::paintEvent(QPaintEvent *e) {
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     QRectF r = rect();
     if (backdrop.isNull()) buildBackdrop();
-    p.drawPixmap(0, 0, backdrop);
+    qint64 ft = fadeFrames->isActive() ? fadeClock.elapsed() : kFadeMs;
+    if (ft < kFadeMs && !previous.isNull()) {  // out through near-black, then in
+        qreal t = ft / qreal(kFadeMs);
+        bool out = t < .5;
+        p.drawPixmap(0, 0, out ? previous : backdrop);
+        qreal dark = out ? easeOut(t * 2) : 1 - easeOut((t - .5) * 2);
+        p.fillRect(r, QColor(0, 0, 0, int(220 * dark)));
+    } else {
+        p.drawPixmap(0, 0, backdrop);
+    }
     if (!colors.isEmpty()) paintSpectrum(p, e->region());
 
     const qreal margin = 64;
@@ -395,20 +438,27 @@ void FullScreenView::paintEvent(QPaintEvent *e) {
         elidedText(p, QRectF(textX, cover.bottom() - 38, textW, 32), state.artist, QColor(255, 255, 255, 190));
     }
 
-    // Progress, then transport, along the bottom.
-    qreal barY = r.height() - margin - 92;
-    QRectF track(margin + 56, barY, r.width() - 2 * margin - 112, 4);
+    // Progress, then transport, along the bottom. While dragging, the bar follows the pointer.
+    QRectF track = trackRect();
+    qreal barY = track.top();
+    qint64 position = scrubbing ? scrubMs : state.position;
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(255, 255, 255, 70));
     p.drawRoundedRect(track, 2, 2);
     if (state.duration > 0) {
-        p.setBrush(theme::white);
-        p.drawRoundedRect(QRectF(track.left(), track.top(), track.width() * state.position / state.duration, 4), 2, 2);
+        qreal done = track.width() * std::clamp<qreal>(qreal(position) / state.duration, 0, 1);
+        bool live = scrubbing || overTrack;  // Spotify's cue: green fill and a thumb under the pointer
+        p.setBrush(live ? QColor(theme::green) : QColor(theme::white));
+        p.drawRoundedRect(QRectF(track.left(), track.top(), done, 4), 2, 2);
+        if (live) {
+            p.setBrush(theme::white);
+            p.drawEllipse(QPointF(track.left() + done, track.center().y()), 7, 7);
+        }
     }
     f.setPixelSize(13);
     p.setFont(f);
     p.setPen(QColor(255, 255, 255, 200));
-    p.drawText(QRectF(margin, barY - 8, 48, 20), Qt::AlignRight | Qt::AlignVCenter, formatTime(state.position));
+    p.drawText(QRectF(margin, barY - 8, 48, 20), Qt::AlignRight | Qt::AlignVCenter, formatTime(position));
     p.drawText(QRectF(r.width() - margin - 48, barY - 8, 48, 20), Qt::AlignLeft | Qt::AlignVCenter, formatTime(state.duration));
     transportButtons(p, state.playing, QPointF(r.center().x(), r.height() - margin - 36), 60, prevRect, playRect, nextRect);
 
@@ -428,6 +478,33 @@ void FullScreenView::mousePressEvent(QMouseEvent *e) {
     if (playRect.contains(at)) return call(transport.playPause);
     if (prevRect.contains(at)) return call(transport.previous);
     if (nextRect.contains(at)) return call(transport.next);
+    if (onTrack(at)) {  // click anywhere on the bar to jump there; hold to drag
+        scrubbing = true;
+        scrubMs = msAt(at.x());
+        update();
+    }
+}
+
+void FullScreenView::mouseMoveEvent(QMouseEvent *e) {
+    QPointF at = e->position();
+    if (scrubbing) {
+        scrubMs = msAt(at.x());
+        return update();
+    }
+    if (bool over = onTrack(at); over != overTrack) {
+        overTrack = over;
+        setCursor(over ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        update();
+    }
+}
+
+void FullScreenView::mouseReleaseEvent(QMouseEvent *e) {
+    if (!scrubbing) return;
+    scrubbing = false;
+    scrubMs = msAt(e->position().x());
+    state.position = scrubMs;  // hold here until the next update from the player
+    if (transport.seek) transport.seek(scrubMs);
+    update();
 }
 
 void FullScreenView::keyPressEvent(QKeyEvent *e) {
@@ -447,6 +524,8 @@ void FullScreenView::showEvent(QShowEvent *) {
 
 void FullScreenView::hideEvent(QHideEvent *) {
     bubbleFrames->stop();
+    fadeFrames->stop();
+    previous = {};
     listen(false);  // never listen while nobody is looking
     ambient = false;
     frames->stop();

@@ -12,7 +12,7 @@ fileignoreconfig:
 - filename: src/test.cpp
   checksum: 0873bd05be90e8de4293a45092f1bf109f39f88028b2bfa160a65fe68272ed9f
 - filename: src/main.cpp
-  checksum: 6fefb7137e62fe4da61a177885ff6cb82ec394de81c60f4fc29cea6dba767fbe
+  checksum: 4984745a08ad832e74cf8f31813b97dbee1e50bb008326a3cadcc33ac3be4455
 - filename: src/mpris.h
   checksum: 684b93497a58388b444674fcac41fe3b10f980c68cf10bd9f71c5b4927d4e51b
 - filename: src/views.cpp

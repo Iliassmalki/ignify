@@ -17,7 +17,8 @@ static const QString kApi = qEnvironmentVariable("IGNIFY_API", "https://api.spot
 static const QString kAccounts = qEnvironmentVariable("IGNIFY_ACCOUNTS", "https://accounts.spotify.com");
 static const QString kScopes = "user-read-playback-state user-modify-playback-state "
                                "playlist-read-private playlist-read-collaborative user-library-read "
-                               "user-library-modify playlist-modify-public playlist-modify-private";
+                               "user-library-modify playlist-modify-public playlist-modify-private "
+                               "user-read-recently-played user-top-read";  // Home: recent shortcuts, top artists/songs
 
 static QString randomToken(int words) {
     QByteArray b(words * 4, Qt::Uninitialized);
@@ -122,7 +123,7 @@ void Api::requestToken(const QUrlQuery &form, bool isRefresh) {
         if (auto granted = o["scope"].toString().split(' '); o.contains("scope")) {
             for (const auto &need : kScopes.split(' '))
                 if (!granted.contains(need)) {
-                    emit message("ignify needs permission to like songs and edit playlists. Approve it in your browser.");
+                    emit message("ignify needs a few more Spotify permissions (" + need + "). Approve them in your browser.");
                     refreshToken.clear();
                     QSettings().remove("refreshToken");
                     return authorize();
@@ -147,7 +148,7 @@ void Api::send(const QByteArray &verb, const QString &path, const QJsonObject &b
     // Wall-clock expiry also covers waking from suspend with a stale token.
     if (accessToken.isEmpty() || QDateTime::currentDateTimeUtc() >= expiresAt) {
         waiting << [=] { send(verb, path, body, cb, onError); };
-        refresh();
+        if (!clientId.isEmpty()) refresh();  // before login() (cached Home at launch), just wait for it
         return;
     }
     // "next" links arrive absolute. Only follow ones inside the API: the Bearer token goes with
