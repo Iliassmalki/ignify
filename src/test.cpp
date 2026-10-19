@@ -53,6 +53,11 @@ int main() {
     }
     assert(moved);
 
+    // scaleName spells scales as their signatures are written, and knows when it doesn't know
+    assert(scaleName(1, 1) == QString::fromUtf8("D♭ major") && scaleName(1, 0) == QString::fromUtf8("C♯ minor"));
+    assert(scaleName(9, 0) == "A minor" && scaleName(0, 1) == "C major" && scaleName(10, 1) == QString::fromUtf8("B♭ major"));
+    assert(scaleName(-1, 1).isEmpty() && scaleName(12, 0).isEmpty() && scaleName(3, -1).isEmpty());
+
     assert(joinNames(QJsonArray{QJsonObject{{"name", "A"}}, QJsonObject{{"name", "B"}}}) == "A, B");
 
     auto img = [](int w, const char *url) { return QJsonObject{{"width", w}, {"url", url}}; };

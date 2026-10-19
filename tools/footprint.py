@@ -63,7 +63,8 @@ def main():
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "XDG_CONFIG_HOME": f"{tmp}/config",
                "XDG_CACHE_HOME": f"{tmp}/cache", "PATH": f"{tmp}/bin:" + os.environ["PATH"],
                "BROWSER": f"{tmp}/bin/xdg-open", "IGNIFY_API": f"{base}/v1", "IGNIFY_ACCOUNTS": base,
-               "IGNIFY_LYRICS": f"{base}/lrclib", "IGNIFY_WIKI": f"{base}/wiki"}
+               "IGNIFY_LYRICS": f"{base}/lrclib", "IGNIFY_WIKI": f"{base}/wiki",
+               "IGNIFY_FEATURES": f"{base}/recco"}  # everything stays on the mock
         t0 = time.time()
         app = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for line in mock.stdout:

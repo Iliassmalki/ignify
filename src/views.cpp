@@ -27,6 +27,9 @@ void transportButtons(QPainter &p, bool playing, QPointF centre, qreal big, QRec
 }
 
 constexpr int kBands = 56, kWindow = 4096, kRate = 44100;  // 4096 samples = 93 ms: calm, fine bass
+constexpr int kBubbleIn = 350, kBubbleHold = 3000, kBubbleMs = 3550;  // fade in, shown for 3 s, fade out
+
+qreal easeOut(qreal x) { return 1 - std::pow(1 - std::clamp(x, 0.0, 1.0), 3); }
 
 QColor along(const QVector<QColor> &stops, qreal t) {  // t 0..1 across the palette
     if (stops.size() == 1) return stops[0];
@@ -128,12 +131,17 @@ void MiniPlayer::closeEvent(QCloseEvent *e) {
 // ---- full screen -------------------------------------------------------------
 
 FullScreenView::FullScreenView(QWidget *owner)
-    : QWidget(owner, Qt::Window), frames(new QTimer(this)), levels(kBands, 0.f) {
+    : QWidget(owner, Qt::Window), frames(new QTimer(this)), levels(kBands, 0.f), bubbleFrames(new QTimer(this)) {
     setWindowTitle("ignify");
     setCursor(Qt::ArrowCursor);
     frames->setInterval(42);  // 24 fps is plenty for bars that move this slowly
     connect(frames, &QTimer::timeout, this, [this] { tick(); });
     clock.start();
+    bubbleFrames->setInterval(16);  // the fade is short: 60 fps for those 3.5 s only
+    connect(bubbleFrames, &QTimer::timeout, this, [this] {
+        if (bubbleClock.elapsed() > kBubbleMs) bubbleFrames->stop();
+        update(bubbleArea());
+    });
 }
 
 void FullScreenView::setState(const NowPlaying &s) {
@@ -148,6 +156,12 @@ void FullScreenView::setState(const NowPlaying &s) {
     // gently and on their own, in the cover's colours.
     ambient = playing && !capture;
     if (ambient) frames->start();
+    // The song's BPM and scale, once per song while full screen is open (data can land a beat later).
+    if (isVisible() && !s.id.isEmpty() && s.id != flashedFor && (!s.scale.isEmpty() || s.bpm > 0)) {
+        flashedFor = s.id;
+        bubbleClock.start();
+        bubbleFrames->start();
+    }
     update();
 }
 
@@ -295,6 +309,67 @@ void FullScreenView::paintSpectrum(QPainter &p, const QRegion &dirty) {
     }
 }
 
+QRect FullScreenView::bubbleArea() const { return QRect(width() / 2 - 260, 0, 520, 140); }
+
+// A pill at the top: "148 BPM" and "D♭ major", values large, units small in the cover's colour,
+// on a glass tinted from it. Slides down and fades in, stays three seconds, fades away.
+void FullScreenView::paintBubble(QPainter &p) {
+    qint64 t = bubbleClock.isValid() ? bubbleClock.elapsed() : kBubbleMs;
+    if (!bubbleFrames->isActive() || t >= kBubbleMs) return;
+    qreal in = easeOut(t / qreal(kBubbleIn)), out = std::clamp((kBubbleMs - t) / qreal(kBubbleMs - kBubbleIn - kBubbleHold), 0.0, 1.0);
+    QStringList values, units;
+    if (state.bpm > 0) values << QString::number(state.bpm), units << "BPM";
+    if (!state.scale.isEmpty()) {
+        int space = state.scale.indexOf(' ');
+        values << state.scale.left(space), units << state.scale.mid(space + 1);
+    }
+    if (values.isEmpty()) return;
+
+    QFont big("Inter Display"), small = font();
+    big.setWeight(QFont::Bold);
+    big.setPixelSize(28);
+    small.setWeight(QFont::DemiBold);
+    small.setPixelSize(14);
+    QFontMetricsF bm(big), sm(small);
+    const qreal pad = 28, gap = 8, divider = 36, h = 62;
+    QList<qreal> widths;
+    qreal w = 2 * pad;
+    for (int i = 0; i < values.size(); ++i) {
+        widths << bm.horizontalAdvance(values[i]) + gap + sm.horizontalAdvance(units[i]);
+        w += widths.last() + (i ? divider : 0);
+    }
+    QRectF pill(width() / 2.0 - w / 2, 36 - (1 - in) * 14, w, h);
+
+    QColor accent = colors.isEmpty() ? QColor(theme::green) : colors.first();
+    p.save();
+    p.setOpacity(std::min(in, out));
+    QLinearGradient glass(pill.topLeft(), pill.topRight());
+    QColor tint = accent;
+    tint.setAlphaF(.30f);
+    glass.setColorAt(0, tint);
+    glass.setColorAt(1, QColor(0, 0, 0, 120));
+    p.setPen(QPen(QColor(255, 255, 255, 46), 1));
+    p.setBrush(glass);
+    p.drawRoundedRect(pill, h / 2, h / 2);
+
+    qreal x = pill.left() + pad, base = pill.center().y() + bm.capHeight() / 2;
+    for (int i = 0; i < values.size(); ++i) {
+        if (i) {
+            p.setPen(QPen(QColor(255, 255, 255, 60), 1));
+            p.drawLine(QPointF(x + divider / 2, pill.top() + 18), QPointF(x + divider / 2, pill.bottom() - 18));
+            x += divider;
+        }
+        p.setFont(big);
+        p.setPen(theme::white);
+        p.drawText(QPointF(x, base), values[i]);
+        p.setFont(small);
+        p.setPen(accent.lighter(115));
+        p.drawText(QPointF(x + bm.horizontalAdvance(values[i]) + gap, base), units[i]);
+        x += widths[i];
+    }
+    p.restore();
+}
+
 void FullScreenView::paintEvent(QPaintEvent *e) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -337,6 +412,8 @@ void FullScreenView::paintEvent(QPaintEvent *e) {
     p.drawText(QRectF(r.width() - margin - 48, barY - 8, 48, 20), Qt::AlignLeft | Qt::AlignVCenter, formatTime(state.duration));
     transportButtons(p, state.playing, QPointF(r.center().x(), r.height() - margin - 36), 60, prevRect, playRect, nextRect);
 
+    if (e->rect().intersects(bubbleArea())) paintBubble(p);
+
     closeRect = QRectF(r.width() - margin - 40, margin - 24, 40, 40);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 120));
@@ -364,7 +441,12 @@ void FullScreenView::closeEvent(QCloseEvent *e) {
     QWidget::closeEvent(e);
 }
 
+void FullScreenView::showEvent(QShowEvent *) {
+    flashedFor.clear();  // every time full screen opens, the bubble shows again
+}
+
 void FullScreenView::hideEvent(QHideEvent *) {
+    bubbleFrames->stop();
     listen(false);  // never listen while nobody is looking
     ambient = false;
     frames->stop();

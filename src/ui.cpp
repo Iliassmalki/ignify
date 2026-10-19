@@ -280,6 +280,7 @@ QStackedWidget > QWidget { background: transparent; }
 #h1 { font-family: "Inter Display"; font-size: 40px; font-weight: 800; }
 #npTitle { font-family: "Inter Display"; font-size: 22px; font-weight: 700; }
 #npArtist { font-size: 14px; color: @subdued; }
+#npFeel { font-size: 13px; font-weight: 600; color: @subdued; padding-top: 2px; }
 #muted, #kind { color: @subdued; }
 #kind { font-size: 12px; font-weight: 600; color: @white; }
 

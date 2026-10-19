@@ -13,7 +13,9 @@ class QProcess;
 class QTimer;
 
 struct NowPlaying {
-    QString title, artist;
+    QString id, title, artist;  // id: the Spotify track id
+    QString scale;  // "D♭ major", empty when unknown
+    int bpm = 0;  // 0 when unknown
     QPixmap cover;
     QColor mood;  // invalid = monochrome cover
     bool playing = false;
@@ -57,6 +59,7 @@ protected:
     void keyPressEvent(QKeyEvent *e) override;
     void closeEvent(QCloseEvent *e) override;
     void hideEvent(QHideEvent *) override;
+    void showEvent(QShowEvent *) override;
     void resizeEvent(QResizeEvent *) override { backdrop = {}; }
 
 private:
@@ -67,6 +70,8 @@ private:
     void listen(bool on);
     void tick();
     void paintSpectrum(QPainter &p, const QRegion &dirty);
+    void paintBubble(QPainter &p);
+    QRect bubbleArea() const;
 
     NowPlaying state;
     QPixmap backdrop;  // blurred cover, scrim, shadow and grain at window size; rebuilt per cover/size
@@ -77,5 +82,8 @@ private:
     QByteArray pcm;               // the latest samples, s16le mono
     QTimer *frames;
     QElapsedTimer clock;          // drives the decorative bars
+    QTimer *bubbleFrames;         // the BPM and scale bubble's fade, only while it shows
+    QElapsedTimer bubbleClock;
+    QString flashedFor;           // the track whose bubble already showed since full screen opened
     std::vector<float> levels;    // what each bar shows now, eased towards the spectrum
 };

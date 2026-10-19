@@ -12,6 +12,7 @@ static const QColor likedFrom("#450AF5"), likedTo("#C4EFD9");  // Spotify's Like
 // Keyless public services for what Spotify's public API doesn't offer; overridable for the mock.
 static const QString kLyrics = qEnvironmentVariable("IGNIFY_LYRICS", "https://lrclib.net");
 static const QString kWiki = qEnvironmentVariable("IGNIFY_WIKI", "https://en.wikipedia.org");
+static const QString kFeatures = qEnvironmentVariable("IGNIFY_FEATURES", "https://api.reccobeats.com");
 
 // "uris=a,b" with each URI encoded but the separating commas kept, as Spotify's docs show.
 static QString encodedUris(const QStringList &uris) {
@@ -576,6 +577,10 @@ private:
         layout->addWidget(npArtist);
         layout->addSpacing(6);
         layout->addWidget(npAlbum);
+        npFeel = label({}, "npFeel");
+        npFeel->setToolTip("Scale and tempo, from ReccoBeats");
+        npFeel->hide();
+        layout->addWidget(npFeel);
         layout->addSpacing(22);
         layout->addWidget(buildArtistCard());
         layout->addStretch();
@@ -1261,6 +1266,7 @@ private:
         addButton->show();
         checkLiked();
         loadArtist(item);
+        loadFeatures(item);
         if (pages->currentWidget() == lyricsPage) loadLyrics();
         if (sideStack->currentIndex() == 1) loadQueue();
         if (listBlocked && pages->currentWidget() == listPage && nowContextUri == context) revealFromQueue();
@@ -1296,6 +1302,9 @@ private:
             npTitle->setText("Nothing playing");
             npArtist->setText("Double-click any song to play it here.");
             npAlbum->clear();
+            npFeel->hide();
+            nowScale.clear();
+            nowBpm = 0;
             barCover->clear();
             barTrack->clear();
             nowItem = {};
@@ -1543,6 +1552,37 @@ private:
         connect(reply, &QNetworkReply::finished, this, [reply, done] {
             reply->deleteLater();
             done(reply->error() ? QJsonDocument() : QJsonDocument::fromJson(reply->readAll()));
+        });
+    }
+
+    // BPM and scale. Spotify closed its audio-features endpoint to apps made after November 2024,
+    // so they come from ReccoBeats (free, no account), asked once per song by its Spotify id.
+    // Only that id is sent; the Spotify token never leaves api.spotify.com.
+    void loadFeatures(const QJsonObject &item) {
+        static const QRegularExpression safeId("^[A-Za-z0-9-]{1,64}$");  // it goes into a URL
+        QString id = item["id"].toString();
+        auto show = [this, id](const QString &scale, int bpm) {
+            if (id != nowItem["id"].toString()) return;  // skipped ahead meanwhile
+            nowScale = scale;
+            nowBpm = bpm;
+            QStringList parts;
+            if (!scale.isEmpty()) parts << scale;
+            if (bpm > 0) parts << QString("%1 BPM").arg(bpm);
+            npFeel->setText(parts.join(" \u2022 "));
+            npFeel->setVisible(!parts.isEmpty());
+            pushNowPlaying();
+        };
+        show({}, 0);
+        if (!safeId.match(id).hasMatch() || item["is_local"].toBool()) return;
+        if (auto it = features.constFind(id); it != features.cend()) return show(it->first, it->second);
+        fetchJson(QUrl(kFeatures + "/v1/audio-features?ids=" + id), [this, id, show](const QJsonDocument &d) {
+            if (d.isNull()) return;  // offline or rate-limited: ask again next time it plays
+            auto f = d["content"].toArray().at(0).toObject();  // empty when ReccoBeats doesn't know it
+            QString scale = scaleName(f["key"].toInt(-1), f["mode"].toInt(-1));  // ReccoBeats calls the pitch "key"
+            int bpm = qRound(f["tempo"].toDouble());
+            if (bpm < 30 || bpm > 300) bpm = 0;  // missing or nonsense: hidden
+            features[id] = {scale, bpm};
+            show(scale, bpm);
         });
     }
 
@@ -2378,8 +2418,8 @@ private:
     void pushNowPlaying() {
         bool miniOn = mini && mini->isVisible(), fullOn = full && full->isVisible();
         if (!miniOn && !fullOn) return;
-        NowPlaying s{nowItem["name"].toString(), joinNames(nowItem["artists"].toArray()), nowCover, nowMood,
-                     playing, positionMs(), seek->maximum()};
+        NowPlaying s{nowItem["id"].toString(), nowItem["name"].toString(), joinNames(nowItem["artists"].toArray()),
+                     nowScale, nowBpm, nowCover, nowMood, playing, positionMs(), seek->maximum()};
         s.local = !deviceId.isEmpty() && activeDeviceId == deviceId;  // librespot is the one playing
         pushedSecond = s.position / 1000;
         if (miniOn) mini->setState(s);
@@ -2541,6 +2581,10 @@ private:
     Mpris *mpris = nullptr;
     QPixmap nowCover, bigCover;
     QColor nowMood;
+    QString nowScale;  // the playing song's scale and tempo, when known
+    int nowBpm = 0;
+    QHash<QString, QPair<QString, int>> features;  // track id -> {scale, bpm}, unknown ones too
+    QLabel *npFeel;
     qint64 pushedSecond = -1;
     struct Shortcut {
         const char *keys, *what;

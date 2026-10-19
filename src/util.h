@@ -121,6 +121,15 @@ inline std::vector<float> ambientBands(float seconds, int bands) {
     return out;
 }
 
+// Spotify's pitch class (0 = C .. 11 = B, -1 unknown) and mode (1 major, 0 minor) as the scale's
+// name, spelled the way its signature is usually written: D♭ major but C♯ minor.
+inline QString scaleName(int pitch, int mode) {
+    static const char *major[] = {"C", "D♭", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"};
+    static const char *minor[] = {"C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "G♯", "A", "B♭", "B"};
+    if (pitch < 0 || pitch > 11 || (mode != 0 && mode != 1)) return {};
+    return QString::fromUtf8(mode ? major[pitch] : minor[pitch]) + (mode ? " major" : " minor");
+}
+
 inline QString joinNames(const QJsonArray &artists) {
     QStringList names;
     for (const auto &a : artists) names << a.toObject()["name"].toString();

@@ -3,6 +3,7 @@
 #   src/test.cpp                   RFC 7636 appendix B PKCE test vector (public)
 #   src/main.cpp, src/views.cpp    "key" matches in keyboard-shortcut code (QKeySequence, Qt::Key_*, cacheKey)
 #   src/mpris.h                    "media keys" in a comment
+#   src/main.cpp, tools/mock_spotify.py  ReccoBeats' "key" field (a song's pitch class, 0-11)
 fileignoreconfig:
 - filename: README.md
   checksum: 762cc88bbfc647aa987b51f8e685a03c5c831cb21fdec88bc17662b44af2576c
@@ -11,9 +12,11 @@ fileignoreconfig:
 - filename: src/test.cpp
   checksum: 0873bd05be90e8de4293a45092f1bf109f39f88028b2bfa160a65fe68272ed9f
 - filename: src/main.cpp
-  checksum: f0c159e26f770b61f3e9dfacb681b16c7c3faef24d1fb9eeb7d703d1b72486a2
+  checksum: 6fefb7137e62fe4da61a177885ff6cb82ec394de81c60f4fc29cea6dba767fbe
 - filename: src/mpris.h
   checksum: 684b93497a58388b444674fcac41fe3b10f980c68cf10bd9f71c5b4927d4e51b
 - filename: src/views.cpp
   checksum: 2795fe17a813c625ac118e68374d81574af0025e3bb1f89288e6f7aed91c00f4
+- filename: tools/mock_spotify.py
+  checksum: 77a0180453656647e030b1aa5e187651e2531bd8dbf8b917fe142fe43cf56b88
 version: "1.0"

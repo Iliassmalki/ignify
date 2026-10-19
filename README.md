@@ -67,6 +67,11 @@ ignify itself and one for librespot. Both are remembered after that:
 - **Queue**: the queue button shows Now playing, "Next from" the album or playlist, and a
   Recently played tab. Right-click songs to add them to the queue.
 - **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
+- **Scale and tempo**: the song panel shows the playing song's scale and BPM ("D♭ major •
+  148 BPM"), and every time full screen opens, a pill at the top shows them for three seconds.
+  Spotify closed its audio-features endpoint to apps made after November 2024, so they come
+  from [ReccoBeats](https://reccobeats.com) (free, no account), asked once per song. Songs it
+  doesn't know show nothing.
 - **Loudness**: songs play on this computer 3 dB above Spotify's normalised level, about
   what Spotify's "Loud" setting does, with librespot's limiter catching peaks so nothing
   distorts. Change it with `loudnessDb=` (-10 to 10) in `~/.config/ignify/ignify.conf`, then
@@ -126,7 +131,7 @@ change.
 
 | measured | budget | official Spotify (same laptop) |
 |---|---|---|
-| binary 0.88 MB | 1 MB | 347 MB install |
+| binary 0.92 MB | 1 MB | 347 MB install |
 | memory 47 MB headless, ~50 MB on screen (+23 MB librespot) | 100 MB | 929 MB across 10 processes, idle |
 | CPU ~1% (+~2% librespot) while playing | 3% | 23% idle on the home screen |
 
@@ -143,7 +148,7 @@ you can see play, queue, shuffle, repeat, like and playlist calls arrive.
 ```bash
 python3 tools/mock_spotify.py &
 mkdir -p /tmp/ignify-mock/ignify && printf '[General]\nclientId=0123456789abcdef0123456789abcdef\nrefreshToken=mock\n' > /tmp/ignify-mock/ignify/ignify.conf
-B=http://127.0.0.1:8899; XDG_CONFIG_HOME=/tmp/ignify-mock IGNIFY_API=$B/v1 IGNIFY_ACCOUNTS=$B IGNIFY_LYRICS=$B/lrclib IGNIFY_WIKI=$B/wiki ./build/ignify
+B=http://127.0.0.1:8899; XDG_CONFIG_HOME=/tmp/ignify-mock IGNIFY_API=$B/v1 IGNIFY_ACCOUNTS=$B IGNIFY_LYRICS=$B/lrclib IGNIFY_WIKI=$B/wiki IGNIFY_FEATURES=$B/recco ./build/ignify
 ```
 
 ## Known limits
@@ -176,6 +181,7 @@ errors and no leaks. Hostile data was replayed with `MOCK_EVIL=1` and `MOCK_FOLL
 - **Secrets**: the refresh token lives in `~/.config/ignify/` (folder 0700, file 0600), and
   librespot's saved login in `~/.cache/ignify/` (folder 0700). Cached track lists (what you
   listen to) sit in an owner-only folder too.
+- **ReccoBeats** gets only the playing song's Spotify id, never the Spotify token.
 - **The spectrum** reads the default output's monitor through `parec` only while full screen
   is open and the music plays here; samples stay in memory (the latest 93 ms) and nothing is
   recorded or sent. Another app's sound shows in the bars too while it plays.

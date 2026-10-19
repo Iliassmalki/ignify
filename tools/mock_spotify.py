@@ -16,6 +16,7 @@ Security test switches (off by default):
   MOCK_FOLLOWED_ONLY=1  the user owns no playlists
   MOCK_DELAY=3          playlist and Liked Songs pages take 3 s, to see what the list cache hides
   MOCK_COVER=photo.png  album 0's cover, to judge the full-screen blur on a real picture
+Also serves ReccoBeats audio features at /recco (IGNIFY_FEATURES=<base>/recco).
 """
 import json, os, re, struct, sys, time, zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -235,6 +236,14 @@ class Handler(BaseHTTPRequestHandler):
                                    "shuffle_state": PLAYER["shuffle"], "repeat_state": PLAYER["repeat"],
                                    "context": {"type": PLAYER["context"].split(":")[1], "uri": PLAYER["context"]},
                                    "progress_ms": int((time.time() - STARTED) * 1000) % item["duration_ms"]})
+        if path == "/recco/v1/audio-features":  # ReccoBeats: pitch, mode and tempo by Spotify id
+            out = []
+            for tid in q.get("ids", "").split(","):
+                a, n = (tid.split("-") + ["0"])[:2]
+                if a.isdigit() and n.isdigit() and int(a) % 12 != 11:  # album 11's songs are unknown to it
+                    out.append({"href": f"https://open.spotify.com/track/{tid}", "key": int(a) * 5 % 12,
+                                "mode": (int(a) + int(n)) % 2, "tempo": 78 + (int(a) * 13 + int(n) * 7) % 90 + 0.37})
+            return self.send_json({"content": out})
         if path == "/lrclib/api/get":
             if "Waves" in q.get("track_name", ""):
                 return self.send_json({"instrumental": False, "plainLyrics": "\n".join(LYRICS), "syncedLyrics": synced()})
