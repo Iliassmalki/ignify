@@ -67,6 +67,10 @@ ignify itself and one for librespot. Both are remembered after that:
 - **Queue**: the queue button shows Now playing, "Next from" the album or playlist, and a
   Recently played tab. Right-click songs to add them to the queue.
 - **Shuffle and repeat** (off, all, one) beside the transport, as in Spotify.
+- **Loudness**: songs play on this computer 3 dB above Spotify's normalised level, about
+  what Spotify's "Loud" setting does, with librespot's limiter catching peaks so nothing
+  distorts. Change it with `loudnessDb=` (-10 to 10) in `~/.config/ignify/ignify.conf`, then
+  restart ignify. Music playing on your phone uses the phone's own setting.
 - **Back and forward** between pages: the arrows by the logo, or Alt+Left / Alt+Right.
 - **Mini player** (Ctrl+M): a small always-on-top window with controls on hover.
 - **Full screen** (F11): the cover over a soft-focus copy of itself, made from the 640 px

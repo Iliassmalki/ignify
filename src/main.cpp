@@ -1347,9 +1347,13 @@ private:
         connect(proc, &QProcess::readyRead, this, [proc] {
             while (proc->canReadLine()) qInfo().noquote() << "librespot:" << proc->readLine().trimmed();
         });
+        // Every song a little louder: +3 dB over Spotify's normalised level, which is about what
+        // its own "Loud" setting does. librespot's dynamic limiter (on by default) catches the
+        // peaks, so nothing clips. Tunable with loudnessDb in ignify.conf, -10 to 10.
+        double loudness = std::clamp(QSettings().value("loudnessDb", 3.0).toDouble(), -10.0, 10.0);
         proc->start(exe, {"--name", kDevice, "--cache", cache, "--system-cache", cache, "--bitrate", "320",
                           "--enable-oauth", "--initial-volume", "60", "--enable-volume-normalisation",
-                          "--device-type", "computer"});
+                          "--normalisation-pregain", QString::number(loudness, 'f', 1), "--device-type", "computer"});
     }
 
     void findDevice(int tries) {
